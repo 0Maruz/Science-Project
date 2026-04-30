@@ -1,0 +1,206 @@
+{
+  "trained_at": "2026-04-30T16:15:30.891989+00:00",
+  "data_source": "NASA FIRMS VIIRS NRT (real)",
+  "earliest_date": "2025-01-31",
+  "latest_date": "2026-04-22",
+  "total_days": 447,
+  "total_active_cells": 9053,
+  "training_rows": 380232,
+  "grid_size": 0.1,
+  "min_confidence": 0,
+  "prediction_type": "fire_date",
+  "max_prediction_days": 7,
+  "features": [
+    "fire_lag_1",
+    "fire_lag_2",
+    "fire_lag_3",
+    "fire_lag_7",
+    "fire_lag_14",
+    "fire_lag_30",
+    "frp_lag_1",
+    "frp_lag_2",
+    "frp_lag_3",
+    "frp_lag_7",
+    "frp_lag_14",
+    "frp_lag_30",
+    "fire_sum_3d",
+    "frp_sum_3d",
+    "frp_max_3d",
+    "active_days_3d",
+    "fire_sum_7d",
+    "frp_sum_7d",
+    "frp_max_7d",
+    "active_days_7d",
+    "fire_sum_14d",
+    "frp_sum_14d",
+    "frp_max_14d",
+    "active_days_14d",
+    "fire_sum_30d",
+    "frp_sum_30d",
+    "frp_max_30d",
+    "active_days_30d",
+    "frp_trend_1d",
+    "frp_trend_3d",
+    "fire_count_today",
+    "frp_sum_today",
+    "bright_mean_today",
+    "confidence_mean_today",
+    "month_sin",
+    "month_cos",
+    "doy_sin",
+    "doy_cos",
+    "is_burn_season",
+    "lat_grid",
+    "lon_grid"
+  ],
+  "best_model": "lightgbm",
+  "model": {
+    "type": "lightgbm",
+    "val_metrics": {
+      "mae_days": 1.6473,
+      "rmse_days": 1.9889,
+      "r2": 0.0168,
+      "accuracy_within_1day": 0.5072,
+      "cv_mae_days": 1.5826
+    },
+    "test_metrics": {
+      "mae_days": 1.4799,
+      "rmse_days": 1.7759,
+      "r2": 0.2249,
+      "accuracy_within_1day": 0.5608
+    },
+    "best_params": {
+      "subsample": 0.8,
+      "reg_lambda": 0.0,
+      "reg_alpha": 0.0,
+      "num_leaves": 31,
+      "n_estimators": 600,
+      "min_child_samples": 100,
+      "learning_rate": 0.02,
+      "colsample_bytree": 0.8
+    },
+    "note": "val_metrics: model selection on 20% val split. test_metrics: held-out 20% test split, evaluated before refit. Deployed artefact is refit on train+val."
+  },
+  "all_candidates": {
+    "lightgbm": {
+      "best_params": {
+        "subsample": 0.8,
+        "reg_lambda": 0.0,
+        "reg_alpha": 0.0,
+        "num_leaves": 31,
+        "n_estimators": 600,
+        "min_child_samples": 100,
+        "learning_rate": 0.02,
+        "colsample_bytree": 0.8
+      },
+      "metrics": {
+        "mae_days": 1.6473,
+        "rmse_days": 1.9889,
+        "r2": 0.0168,
+        "accuracy_within_1day": 0.5072,
+        "cv_mae_days": 1.5826
+      }
+    },
+    "xgboost": {
+      "best_params": {
+        "subsample": 0.8,
+        "reg_lambda": 2.0,
+        "reg_alpha": 0.1,
+        "n_estimators": 200,
+        "min_child_weight": 5,
+        "max_depth": 4,
+        "learning_rate": 0.05,
+        "colsample_bytree": 1.0
+      },
+      "metrics": {
+        "mae_days": 1.6494,
+        "rmse_days": 1.9979,
+        "r2": 0.0079,
+        "accuracy_within_1day": 0.505,
+        "cv_mae_days": 1.5952
+      }
+    }
+  },
+  "feature_importance_top": [
+    {
+      "feature": "doy_sin",
+      "importance": 4746.0
+    },
+    {
+      "feature": "doy_cos",
+      "importance": 3875.0
+    },
+    {
+      "feature": "lon_grid",
+      "importance": 2279.0
+    },
+    {
+      "feature": "lat_grid",
+      "importance": 2230.0
+    },
+    {
+      "feature": "month_sin",
+      "importance": 561.0
+    },
+    {
+      "feature": "fire_sum_30d",
+      "importance": 309.0
+    },
+    {
+      "feature": "frp_sum_30d",
+      "importance": 300.0
+    },
+    {
+      "feature": "active_days_30d",
+      "importance": 287.0
+    },
+    {
+      "feature": "fire_count_today",
+      "importance": 264.0
+    },
+    {
+      "feature": "fire_sum_14d",
+      "importance": 236.0
+    },
+    {
+      "feature": "frp_max_14d",
+      "importance": 225.0
+    },
+    {
+      "feature": "frp_max_30d",
+      "importance": 218.0
+    },
+    {
+      "feature": "frp_sum_14d",
+      "importance": 206.0
+    },
+    {
+      "feature": "frp_sum_7d",
+      "importance": 205.0
+    },
+    {
+      "feature": "frp_max_3d",
+      "importance": 179.0
+    },
+    {
+      "feature": "active_days_14d",
+      "importance": 169.0
+    },
+    {
+      "feature": "month_cos",
+      "importance": 164.0
+    },
+    {
+      "feature": "fire_sum_7d",
+      "importance": 158.0
+    },
+    {
+      "feature": "frp_sum_today",
+      "importance": 157.0
+    },
+    {
+      "feature": "frp_max_7d",
+      "importance": 156.0
+    }
+  ]
+}

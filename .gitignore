@@ -1,0 +1,12 @@
+.env
+__pycache__/
+.venv/
+*.pkl
+outputs/models/
+outputs/features/
+outputs/riskmap/*.geojson
+Science-Project/
+src.zip
+.claude/
+.DS_Store
+*.pyc
