@@ -28,6 +28,7 @@ from features import (
     urgency_from_thresholds,
 )
 from io_utils import read_table
+from urban_areas import THAI_URBAN_AREAS, classify_urban
 
 # =========================================================
 # CONFIG
@@ -49,13 +50,42 @@ os.makedirs(RISKMAP_DIR, exist_ok=True)
 
 HISTORY_WINDOW_DAYS = 30
 
-# Drop cells with no real fire activity in the last HISTORY_WINDOW_DAYS days
-# before computing urgency. The model still runs for them, but a cell that
-# hasn't burned in 30+ days has no signal — its prediction collapses to the
-# training-data mean (~3 days) and dilutes the urgency tiers. Filtering here
-# means the dashboard only ranks cells that actually carry some risk signal.
-# Set via env or override here. 0 disables the filter (legacy behaviour).
+# Short-window filter: cells must have ≥ N fires in the last HISTORY_WINDOW_DAYS
+# days. Catches "recently active" cells. Default 1.
 MIN_HISTORICAL_FIRES_FOR_DISPLAY = int(os.getenv("MIN_HISTORICAL_FIRES_FOR_DISPLAY", "1"))
+
+# Long-window filter: cells must have ≥ N fires in the last
+# LONG_HISTORY_WINDOW_DAYS days. Catches "structurally fire-prone" cells.
+# This is the strongest signal you have for "this place actually burns" — a
+# cell that's burned 0–2 times in 90 days is almost certainly not going to
+# burn next week, regardless of what the model predicts. Default 3 fires in
+# 90 days = "this place burns at least once per month on average".
+# Set MIN_LONG_HISTORICAL_FIRES=0 to disable the long-window filter.
+LONG_HISTORY_WINDOW_DAYS  = int(os.getenv("LONG_HISTORY_WINDOW_DAYS",  "90"))
+MIN_LONG_HISTORICAL_FIRES = int(os.getenv("MIN_LONG_HISTORICAL_FIRES", "3"))
+
+# Climatological filter: annualized fire-days per cell, computed across the
+# ENTIRE available data record (not a fixed window). Captures the empirical
+# base rate of fire activity for each location — the "is this place
+# structurally fire-prone?" question that count-based windows can't answer
+# cleanly. A cell with 0.5 fire-days/year is essentially never on fire; a
+# cell with 5+ fire-days/year is a known hotspot. Default cutoff of 1.0
+# fire-day/year is conservative — bump higher to be more selective.
+# Set to 0 to disable.
+MIN_FIRE_DAYS_PER_YEAR = float(os.getenv("MIN_FIRE_DAYS_PER_YEAR", "1.0"))
+
+# Urban-exclusion filter: drop predictions that fall inside (or near) major
+# Thai cities. FIRMS detects garbage burning, industrial heat, and other
+# non-wildfire heat sources in cities; predicting "wildfire in central
+# Bangkok" is misleading. The curated list of urban areas + radii is in
+# urban_areas.py — edit it to add/remove cities or adjust their footprints.
+#
+#   URBAN_FILTER_ENABLED  — set to "false" to disable the filter entirely
+#   URBAN_BUFFER_KM       — extra km added beyond each city's radius. 0 =
+#                           drop only cells inside the hand-tuned radius;
+#                           5–10 = also drop suburban edge cells.
+URBAN_FILTER_ENABLED = os.getenv("URBAN_FILTER_ENABLED", "true").lower() in ("1", "true", "yes")
+URBAN_BUFFER_KM      = float(os.getenv("URBAN_BUFFER_KM", "0.0"))
 
 
 # =========================================================
@@ -115,21 +145,73 @@ def build_observed(df: pd.DataFrame):
 # HISTORICAL FIRE COUNT (real FIRMS detections in last N days)
 # =========================================================
 
-def historical_fire_counts(df: pd.DataFrame, base_date, window_days: int = HISTORY_WINDOW_DAYS) -> pd.DataFrame:
-    """Real per-cell sum of fire_count over the [base_date-window, base_date] window.
+def historical_fire_counts(
+    df: pd.DataFrame,
+    base_date,
+    window_days: int = HISTORY_WINDOW_DAYS,
+    column_name: str = "historical_fire_count_30d",
+) -> pd.DataFrame:
+    """Real per-cell sum of fire_count over [base_date-window, base_date].
 
     No imputation, no extrapolation — just a groupby on the densified FIRMS
     frame. Cells with no detections in the window get exactly 0.
+
+    Args:
+        column_name: Name of the output count column. Default matches the
+            legacy "historical_fire_count_30d" so existing callers keep working.
     """
     start = base_date - timedelta(days=window_days)
     window = df[(df["date"] >= start) & (df["date"] <= base_date)]
     counts = (
         window.groupby(["lat_grid", "lon_grid"], as_index=False)["fire_count"]
         .sum()
-        .rename(columns={"fire_count": "historical_fire_count_30d"})
+        .rename(columns={"fire_count": column_name})
     )
-    counts["historical_fire_count_30d"] = counts["historical_fire_count_30d"].astype(int)
+    counts[column_name] = counts[column_name].astype(int)
     return counts
+
+
+def historical_fire_rate(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-cell annualized fire frequency, computed across the full record.
+
+    For each cell we count the number of distinct *fire-days* (days the cell
+    had at least one FIRMS detection), then annualize:
+
+        fire_days_per_year = fire_days_total × 365.25 / days_in_record
+
+    Why fire-days instead of total detections? A single intense fire can
+    produce dozens of detections in one day — those should count as one
+    "fire event," not dozens. Fire-days is a more honest proxy for "how
+    often does this cell actually burn?"
+
+    Returns a frame with columns:
+        lat_grid, lon_grid, fire_days_total, fire_days_per_year
+    """
+    if df.empty:
+        return pd.DataFrame(columns=["lat_grid", "lon_grid",
+                                     "fire_days_total", "fire_days_per_year"])
+    days_in_record = (df["date"].max() - df["date"].min()).days + 1
+    if days_in_record < 30:
+        # Too short to estimate a yearly rate reliably; mark every cell as
+        # "rate unknown" with NaN so downstream filtering can fall back to
+        # the count-based filters.
+        rate = (
+            df.groupby(["lat_grid", "lon_grid"])["fire_count"]
+            .apply(lambda x: int((x > 0).sum()))
+            .reset_index(name="fire_days_total")
+        )
+        rate["fire_days_per_year"] = float("nan")
+        return rate
+
+    rate = (
+        df.groupby(["lat_grid", "lon_grid"])["fire_count"]
+        .apply(lambda x: int((x > 0).sum()))
+        .reset_index(name="fire_days_total")
+    )
+    rate["fire_days_per_year"] = (
+        rate["fire_days_total"] * 365.25 / days_in_record
+    )
+    return rate
 
 
 # =========================================================
@@ -161,25 +243,95 @@ def build_predicted(df: pd.DataFrame, model, base_date, meta: dict):
     # Rounding-proximity proxy. Documented as NOT a calibrated probability.
     base["prediction_confidence"] = 1.0 - np.abs(raw_pred - days_clipped)
 
-    # Attach real historical fire count per cell (last 30 days from FIRMS).
-    counts = historical_fire_counts(df, base_date)
-    base = base.merge(counts, on=["lat_grid", "lon_grid"], how="left")
-    base["historical_fire_count_30d"] = (
-        base["historical_fire_count_30d"].fillna(0).astype(int)
+    # Attach real historical fire counts per cell at TWO time scales:
+    #   • 30-day count → "is this cell active right now?"
+    #   • long-window count (default 90d) → "is this cell structurally fire-prone?"
+    # The long-window count is the strongest filter we have for "this place
+    # actually burns" — it cuts cells that the model wants to predict on but
+    # which haven't seen meaningful fire activity in months.
+    counts_30d = historical_fire_counts(
+        df, base_date,
+        window_days=HISTORY_WINDOW_DAYS,
+        column_name="historical_fire_count_30d",
     )
+    long_col = f"historical_fire_count_{LONG_HISTORY_WINDOW_DAYS}d"
+    counts_long = historical_fire_counts(
+        df, base_date,
+        window_days=LONG_HISTORY_WINDOW_DAYS,
+        column_name=long_col,
+    )
+    base = base.merge(counts_30d,  on=["lat_grid", "lon_grid"], how="left")
+    base = base.merge(counts_long, on=["lat_grid", "lon_grid"], how="left")
+    base["historical_fire_count_30d"] = base["historical_fire_count_30d"].fillna(0).astype(int)
+    base[long_col] = base[long_col].fillna(0).astype(int)
 
-    # Drop low-signal cells before threshold calibration / display. Cells with
-    # zero recent fires get predictions that collapse to the training mean and
-    # dilute the urgency tiers; keeping only cells with real activity makes
-    # the calibrated tiers meaningful.
+    # Climatological fire-rate (full-history annualized). This is the
+    # "empirical base rate" filter — answers "does this cell actually
+    # burn often enough to be worth predicting on?" Cells the model wants
+    # to call CRITICAL but that have never historically burned will be
+    # dropped here.
+    rate = historical_fire_rate(df)
+    base = base.merge(rate, on=["lat_grid", "lon_grid"], how="left")
+    base["fire_days_total"] = base["fire_days_total"].fillna(0).astype(int)
+    base["fire_days_per_year"] = base["fire_days_per_year"].fillna(0.0)
+
+    # Apply ALL filters in sequence. Cells must pass each one to be displayed.
     n_total = len(base)
     if MIN_HISTORICAL_FIRES_FOR_DISPLAY > 0:
+        before = len(base)
         base = base[base["historical_fire_count_30d"] >= MIN_HISTORICAL_FIRES_FOR_DISPLAY].copy()
-    print(
-        f"Filtered cells with ≥{MIN_HISTORICAL_FIRES_FOR_DISPLAY} fire(s) in "
-        f"last {HISTORY_WINDOW_DAYS}d: {len(base):,} / {n_total:,} kept "
-        f"({len(base)*100/max(n_total,1):.1f}%)"
+        print(
+            f"Short-window  filter: ≥{MIN_HISTORICAL_FIRES_FOR_DISPLAY} fire(s) in "
+            f"last {HISTORY_WINDOW_DAYS}d → {len(base):,} / {before:,} kept "
+            f"({len(base)*100/max(before,1):.1f}%)"
+        )
+    if MIN_LONG_HISTORICAL_FIRES > 0:
+        before = len(base)
+        base = base[base[long_col] >= MIN_LONG_HISTORICAL_FIRES].copy()
+        print(
+            f"Long-window   filter: ≥{MIN_LONG_HISTORICAL_FIRES} fire(s) in "
+            f"last {LONG_HISTORY_WINDOW_DAYS}d → {len(base):,} / {before:,} kept "
+            f"({len(base)*100/max(before,1):.1f}%)"
+        )
+    if MIN_FIRE_DAYS_PER_YEAR > 0:
+        before = len(base)
+        # Cells with NaN fire_days_per_year (very short data record) are
+        # kept — we only filter when we have enough data to estimate a rate.
+        mask = (
+            base["fire_days_per_year"].isna()
+            | (base["fire_days_per_year"] >= MIN_FIRE_DAYS_PER_YEAR)
+        )
+        base = base[mask].copy()
+        print(
+            f"Fire-rate     filter: ≥{MIN_FIRE_DAYS_PER_YEAR} fire-days/year "
+            f"(full history) → {len(base):,} / {before:,} kept "
+            f"({len(base)*100/max(before,1):.1f}%)"
+        )
+
+    # Urban-exclusion: drop cells that fall inside (or near) cities. Run AFTER
+    # the cheaper count/rate filters so we do the haversine pass on the
+    # smallest possible set. We also annotate every surviving cell with its
+    # nearest urban area + distance, surfaced in the popup so users can see
+    # context like "5 km from Chiang Mai" alongside the prediction.
+    is_urban, urban_dist, urban_name = classify_urban(
+        base["lat_grid"].to_numpy(),
+        base["lon_grid"].to_numpy(),
+        urban_areas=THAI_URBAN_AREAS,
+        buffer_km=URBAN_BUFFER_KM,
     )
+    base["nearest_urban_area"] = urban_name
+    base["nearest_urban_distance_km"] = urban_dist
+    if URBAN_FILTER_ENABLED:
+        before = len(base)
+        base = base[~is_urban].copy()
+        n_dropped = before - len(base)
+        print(
+            f"Urban-area    filter: dropped {n_dropped:,} cells inside major "
+            f"cities (+{URBAN_BUFFER_KM} km buffer); {len(base):,} / {before:,} kept "
+            f"({len(base)*100/max(before,1):.1f}%)"
+        )
+    print(f"Total after history filters: {len(base):,} / {n_total:,} cells "
+          f"({len(base)*100/max(n_total,1):.1f}%)")
 
     # Recalibrate urgency thresholds from THIS run's prediction distribution
     # on the filtered (signal-bearing) cells, so the four tiers each carry a
@@ -236,6 +388,7 @@ def append_geojson(observed: pd.DataFrame, predicted: pd.DataFrame, base_date, t
         "urgency_thresholds": thresholds,
         "metrics": metrics,
         "history_window_days": HISTORY_WINDOW_DAYS,
+        "long_history_window_days": LONG_HISTORY_WINDOW_DAYS,
     }
 
     # ---------- OBSERVED (latest densified FIRMS day) ----------
@@ -260,6 +413,7 @@ def append_geojson(observed: pd.DataFrame, predicted: pd.DataFrame, base_date, t
         })
 
     # ---------- PREDICTED ----------
+    long_col = f"historical_fire_count_{LONG_HISTORY_WINDOW_DAYS}d"
     for _, r in predicted.iterrows():
         geojson["features"].append({
             "type": "Feature",
@@ -276,6 +430,11 @@ def append_geojson(observed: pd.DataFrame, predicted: pd.DataFrame, base_date, t
                 "confidence": float(r["prediction_confidence"]),
                 "raw_prediction": float(r["raw_prediction"]),
                 "historical_fire_count_30d": int(r["historical_fire_count_30d"]),
+                "historical_fire_count_long": int(r[long_col]),
+                "fire_days_total": int(r["fire_days_total"]),
+                "fire_days_per_year": float(r["fire_days_per_year"]),
+                "nearest_urban_area": str(r["nearest_urban_area"]),
+                "nearest_urban_distance_km": float(r["nearest_urban_distance_km"]),
                 "lat": float(r["lat_grid"]),
                 "lon": float(r["lon_grid"]),
             },

@@ -289,6 +289,50 @@ html, body {
 }
 
 /* ===================================
+   SLIDER (heatmap radius control)
+   =================================== */
+
+.slider-group {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.slider-group[hidden] {
+  display: none;
+}
+
+.slider-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: #cfcfcf;
+  margin-bottom: 6px;
+}
+
+.slider-value {
+  font-variant-numeric: tabular-nums;
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+.slider-group input[type="range"] {
+  width: 100%;
+  accent-color: #dc2626;
+  cursor: pointer;
+}
+
+.slider-hint {
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+
+/* ===================================
    INFO FOOTER
    =================================== */
 

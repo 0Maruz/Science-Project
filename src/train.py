@@ -25,15 +25,14 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 import joblib
-import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
 from data_loader import load_and_prepare
 from features import (
+    DEFAULT_URGENCY_THRESHOLDS,  # FIX: BUG 3 — fixed domain thresholds replace quantile calibration
     MAX_PREDICTION_DAYS,
     build_features,
-    calibrate_urgency_thresholds,
     resolve_features,
 )
 from io_utils import resolve_existing, write_table
@@ -92,14 +91,30 @@ def chronological_split(
     val = sorted_df.iloc[train_end:val_end]
     test = sorted_df.iloc[val_end:]
 
-    log.info(
-        "Chronological split → train %d rows (≤%s) | val %d rows | test %d rows (>%s)",
-        len(train),
-        train["date"].max() if len(train) else "n/a",
-        len(val),
-        len(test),
-        val["date"].max() if len(val) else "n/a",
-    )
+    # FIX: BUG 4 — explicit split-date ranges + label distribution per slice so
+    # the train/val/test seasonal mismatch (train pre-Nov, test in peak burn
+    # season) is visible in the log instead of being hidden behind a one-line
+    # summary. Makes the apparently-higher test R² interpretable.
+    log.info("Split date ranges:")
+    for name, split in (("train", train), ("val", val), ("test", test)):
+        if len(split):
+            log.info(
+                "  %-5s : %s → %s  (%d rows)",
+                name,
+                split["date"].min(),
+                split["date"].max(),
+                len(split),
+            )
+        else:
+            log.info("  %-5s : empty", name)
+
+    if "days_until_fire" in sorted_df.columns:
+        for name, split in (("train", train), ("val", val), ("test", test)):
+            if not len(split):
+                continue
+            dist = split["days_until_fire"].value_counts().sort_index()
+            log.info("  %s label dist:\n%s", name, dist.to_string())
+
     return train, val, test
 
 
@@ -199,18 +214,12 @@ def main(
     test_metrics = evaluate(y_test.to_numpy(), test_pred, horizon=MAX_PREDICTION_DAYS)
     log.info("Test metrics (held-out): %s", test_metrics)
 
-    # 6b. Calibrate urgency thresholds from REAL validation predictions.
-    # These cutoffs replace the legacy fixed 0/2/4/7 numbers and reflect the
-    # actual distribution the model produces on unseen-but-already-selected-on
-    # data. Using val (not test) keeps the test set pristine for reporting.
-    val_pred_pre_refit = best_model.predict(X_val)
-    val_pred_clipped = np.clip(np.round(val_pred_pre_refit), 0, MAX_PREDICTION_DAYS)
-    urgency_thresholds = calibrate_urgency_thresholds(
-        val_pred_clipped, horizon=MAX_PREDICTION_DAYS
-    )
+    # 6b. Use fixed-domain urgency thresholds.  # FIX: BUG 3 — quantile calibration
+    # forced every active cell into a tier (NONE=0); fixed cutoffs make NONE
+    # meaningful again and align the pipeline with operator-facing semantics.
+    urgency_thresholds = dict(DEFAULT_URGENCY_THRESHOLDS)
     log.info(
-        "Calibrated urgency thresholds (from val predictions): %s",
-        urgency_thresholds,
+        "Urgency thresholds (fixed domain): CRITICAL=0d, HIGH≤2d, MEDIUM≤4d, LOW≤7d"
     )
 
     # 6c. Refit on train + val to produce the final deployed artefact
@@ -253,8 +262,10 @@ def main(
         ],
         "urgency_thresholds": urgency_thresholds,
         "urgency_thresholds_note": (
-            "Calibrated from the 25/50/75 percentiles of model predictions on "
-            "the held-out validation slice (real outputs, not arbitrary)."
+            # FIX: BUG 3 — switched from quantile calibration to fixed domain cutoffs
+            "Fixed domain thresholds: CRITICAL=fire today, HIGH≤2d, MEDIUM≤4d, "
+            "LOW≤7d, NONE>7d. Quantile calibration was removed because it forced "
+            "every active cell into a tier and made NONE structurally impossible."
         ),
         "best_model": best_name,
         # val metrics = used for model selection (before refit)
@@ -264,6 +275,13 @@ def main(
             "val_metrics": selection["all_results"][best_name]["metrics"],
             "test_metrics": test_metrics,
             "best_params": selection["all_results"][best_name]["best_params"],
+            # FIX: BUG 4 — persist split date ranges so downstream consumers can
+            # interpret val/test metric gaps in light of seasonal coverage.
+            "split_date_ranges": {
+                "train": [str(train_df["date"].min()), str(train_df["date"].max())],
+                "val":   [str(val_df["date"].min()),   str(val_df["date"].max())],
+                "test":  [str(test_df["date"].min()),  str(test_df["date"].max())],
+            },
             "note": (
                 "val_metrics: model selection on 20% val split. "
                 "test_metrics: held-out 20% test split, evaluated before refit. "

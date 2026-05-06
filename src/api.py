@@ -306,7 +306,18 @@ def get_geojson():
 
 
 @app.get("/predict/location")
-def predict_location(lat: float, lon: float, grid_size: float = 0.1, request: Request = None):
+def predict_location(
+    lat: float,
+    lon: float,
+    grid_size: float = float(os.getenv("GRID_SIZE", "0.1")),
+    request: Request = None,
+):
+    """Look up the prediction for the cell containing (lat, lon).
+
+    The default ``grid_size`` is read from the GRID_SIZE env var so this
+    endpoint stays in sync with whatever resolution train.py / fetch_weather.py
+    were run at. Callers can still override per-request if they need to.
+    """
     model      = request.app.state.model
     df         = request.app.state.df
     features   = request.app.state.features

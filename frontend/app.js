@@ -25,7 +25,7 @@ const state = {
   selectedDay: "all", // "all" | 0..7
   thresholds: null,   // { CRITICAL, HIGH, MEDIUM, LOW }
   metrics: null,      // held-out test metrics
-  layers: { observed: null, predicted: null },
+  layers: { observed: null, predicted: null, heatmap: null },
 };
 
 const URGENCY_COLORS = {
@@ -35,7 +35,6 @@ const URGENCY_COLORS = {
   LOW: "#10b981",
   NONE: "#6b7280",
 };
-const URGENCY_SIZES = { CRITICAL: 9, HIGH: 8, MEDIUM: 7, LOW: 6, NONE: 5 };
 
 // ===================================
 // Init
@@ -137,8 +136,13 @@ function displayData() {
   if (document.getElementById("showObserved").checked) {
     state.layers.observed = createObservedLayer(observed);
   }
+  // The heatmap is the primary prediction visualization. The clickable cell
+  // pins are an optional overlay for inspecting individual cells via popups.
   if (document.getElementById("showPredicted").checked) {
-    state.layers.predicted = createPredictedLayer(dayFiltered);
+    state.layers.heatmap = createHeatmapLayer(dayFiltered);
+    if (document.getElementById("showCellPins").checked) {
+      state.layers.predicted = createPredictedLayer(dayFiltered);
+    }
   }
 
   updateStatistics(predicted); // urgency summary always reflects all 7 days
@@ -196,17 +200,76 @@ function renderFreshness(baseDateIso) {
 }
 
 // ===================================
+// GRID-AWARE DOT SIZING
+//
+// Detect the grid resolution from the data (smallest non-zero difference
+// between consecutive unique latitudes) and size each dot as a fraction of
+// the cell width. Because L.circle takes radius in METERS (not pixels):
+//   • Dots scale naturally with zoom — Leaflet does the conversion.
+//   • A dot of radius < cell_half_width can never overlap a neighbor.
+//   • Sizing self-adjusts when GRID_SIZE changes — drop in a finer grid
+//     and dots get proportionally smaller, automatically.
+//
+// Per-tier fractions are chosen so even adjacent CRITICAL+CRITICAL dots
+// (the largest pair) leave ~20% of the cell width as edge-to-edge gap.
+// ===================================
+const URGENCY_DOT_FRAC = {
+  CRITICAL: 0.40,
+  HIGH:     0.32,
+  MEDIUM:   0.25,
+  LOW:      0.18,
+  NONE:     0.14,
+};
+const OBSERVED_DOT_FRAC = 0.30;       // observed-fire dots use a fixed fraction
+const APPROX_METERS_PER_DEGREE = 111320;
+
+function _detectGridSizeDegrees(features) {
+  if (!features || features.length < 2) return 0.1;
+  const lats = [...new Set(features.map(f => f.geometry.coordinates[1]))]
+    .sort((a, b) => a - b);
+  let minDiff = Infinity;
+  for (let i = 1; i < lats.length; i++) {
+    const d = lats[i] - lats[i - 1];
+    if (d > 1e-6 && d < minDiff) minDiff = d;
+  }
+  // Sanity-clamp to a plausible range (between 0.005° and 0.5°). If the
+  // detection fails we fall back to the project default of 0.1°.
+  if (!isFinite(minDiff) || minDiff < 0.005 || minDiff > 0.5) return 0.1;
+  return minDiff;
+}
+
+function _gridSizeMeters() {
+  // Detect against ALL prediction features in the GeoJSON (stable across
+  // day-filter changes), then convert degrees → metres along latitude.
+  const all = ((state.geojson && state.geojson.features) || [])
+    .filter(f => f.properties.source === "predicted");
+  return _detectGridSizeDegrees(all) * APPROX_METERS_PER_DEGREE;
+}
+
+function _dotRadiusMeters(fraction, gridMeters) {
+  return (gridMeters / 2) * fraction;
+}
+
+// ===================================
 // Layers
 // ===================================
 function createObservedLayer(features) {
   const cluster = document.getElementById("clusterMarkers").checked;
   const layer = cluster ? L.markerClusterGroup() : L.layerGroup();
 
+  // Shared canvas renderer = much faster than the default SVG renderer when
+  // there are many markers (8k+ cells at finer grid sizes).
+  const renderer = L.canvas({ padding: 0.5 });
+  const gridM = _gridSizeMeters();
+  const radiusM = _dotRadiusMeters(OBSERVED_DOT_FRAC, gridM);
+
   features.forEach(f => {
     const [lon, lat] = f.geometry.coordinates;
     const props = f.properties;
-    const marker = L.circleMarker([lat, lon], {
-      radius: 6, fillColor: "#ff5722", color: "#fff", weight: 1, fillOpacity: 0.8,
+    const marker = L.circle([lat, lon], {
+      radius: radiusM,
+      renderer: renderer,
+      fillColor: "#ff5722", color: "#fff", weight: 1, fillOpacity: 0.8,
     });
     marker.bindPopup(`
       <div class="popup">
@@ -223,18 +286,26 @@ function createObservedLayer(features) {
 }
 
 function createPredictedLayer(features) {
-  const cluster = document.getElementById("clusterMarkers").checked;
-  const layer = cluster ? L.markerClusterGroup() : L.layerGroup();
+  // Predicted dots are no longer clustered: clustering hides the per-cell
+  // colour distribution, and the heatmap underneath already conveys density.
+  // The checkbox labelled "Cluster Observed Markers" applies only to FIRMS
+  // detections now.
+  const layer = L.layerGroup();
+  const renderer = L.canvas({ padding: 0.5 });
+  const gridM = _gridSizeMeters();
 
   features.forEach(f => {
     const [lon, lat] = f.geometry.coordinates;
     const p = f.properties;
 
     const color = URGENCY_COLORS[p.urgency_level] || URGENCY_COLORS.NONE;
-    const size  = URGENCY_SIZES[p.urgency_level]  || URGENCY_SIZES.NONE;
+    const frac  = URGENCY_DOT_FRAC[p.urgency_level] ?? URGENCY_DOT_FRAC.NONE;
+    const radiusM = _dotRadiusMeters(frac, gridM);
 
-    const marker = L.circleMarker([lat, lon], {
-      radius: size, fillColor: color, color: "#fff", weight: 1, fillOpacity: 0.85,
+    const marker = L.circle([lat, lon], {
+      radius: radiusM,
+      renderer: renderer,
+      fillColor: color, color: "#fff", weight: 1, fillOpacity: 0.85,
     });
 
     const fireDate   = p.predicted_fire_date;
@@ -256,6 +327,21 @@ function createPredictedLayer(features) {
     if (histCount != null) {
       html += `<small>Historical fires (30d, FIRMS): <b>${histCount}</b></small><br>`;
     }
+    if (p.fire_days_per_year != null) {
+      // Annualized empirical fire-day rate over the full FIRMS record.
+      // Provides crucial context: a CRITICAL prediction in a cell with
+      // <1 fire-day/year history should be read with skepticism.
+      const rate = Number(p.fire_days_per_year);
+      html += `<small>Historical rate: <b>${rate.toFixed(1)}</b> fire-days/year</small><br>`;
+    }
+    if (p.nearest_urban_area && p.nearest_urban_distance_km != null) {
+      // The nearest major urban area gives geographic context — useful for
+      // sanity-checking ("this CRITICAL cell is 4 km from Chiang Mai") and
+      // for spotting filter near-misses (cells that *just* escaped the
+      // urban-exclusion radius).
+      const km = Number(p.nearest_urban_distance_km).toFixed(1);
+      html += `<small>Nearest city: ${p.nearest_urban_area} (${km} km)</small><br>`;
+    }
     html += `<small>Cell: ${lat.toFixed(3)}°, ${lon.toFixed(3)}°</small></div>`;
     marker.bindPopup(html);
 
@@ -263,6 +349,209 @@ function createPredictedLayer(features) {
   });
 
   return layer;
+}
+
+// ===================================
+// COLOR INTERPOLATION
+//
+// Maps a raw_prediction value (in days) to an RGB color via the calibrated
+// urgency thresholds. The piecewise linear gradient between threshold colors
+// is what gives the smooth tier-to-tier transitions you'd see in a contour
+// plot (CRITICAL→HIGH→MEDIUM→LOW), and ensures a cell at any zoom level
+// renders in its own urgency color at its center — no green tint just
+// because the user zoomed in past where points cluster.
+// ===================================
+function _hexToRgb(hex) {
+  const h = hex.replace("#", "");
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
+
+function _valueToColor(value, thresholds) {
+  // Stops are anchored at the calibrated thresholds. Values below CRITICAL
+  // clamp to red; values above LOW clamp to green. Between stops we lerp.
+  const stops = [
+    { v: 0,                    c: _hexToRgb(URGENCY_COLORS.CRITICAL) },
+    { v: thresholds.CRITICAL,  c: _hexToRgb(URGENCY_COLORS.CRITICAL) },
+    { v: thresholds.HIGH,      c: _hexToRgb(URGENCY_COLORS.HIGH)     },
+    { v: thresholds.MEDIUM,    c: _hexToRgb(URGENCY_COLORS.MEDIUM)   },
+    { v: thresholds.LOW,       c: _hexToRgb(URGENCY_COLORS.LOW)      },
+  ];
+
+  if (value <= stops[0].v) return stops[0].c;
+  for (let i = 1; i < stops.length; i++) {
+    if (value <= stops[i].v) {
+      const a = stops[i - 1], b = stops[i];
+      const span = b.v - a.v;
+      const t = span > 1e-9 ? (value - a.v) / span : 0;
+      return {
+        r: Math.round(a.c.r + t * (b.c.r - a.c.r)),
+        g: Math.round(a.c.g + t * (b.c.g - a.c.g)),
+        b: Math.round(a.c.b + t * (b.c.b - a.c.b)),
+      };
+    }
+  }
+  return stops[stops.length - 1].c;
+}
+
+// ===================================
+// HEATMAP LAYER — IDW interpolation, urgency-colored
+//
+// Renders the predictions as a continuous color surface where each cell's
+// CENTER is its own tier color, and adjacent cells blend smoothly into a
+// gradient. This is the contour-style look from the example image.
+//
+// Why IDW instead of L.heatLayer:
+//   The previous Leaflet.heat layer was density-based — its color came from
+//   the *number* of overlapping points at a pixel, then mapped through a
+//   green→red gradient. When zoomed in, isolated points had low density
+//   relative to the canvas max, so the gradient mapped them to the bottom
+//   of the scale (green). That made even CRITICAL cells look green at high
+//   zoom, which was wrong.
+//
+//   IDW (inverse-distance weighting) solves this by computing each pixel's
+//   color from the actual `raw_prediction` value of nearby cells:
+//
+//     pixel_value = Σ (w_i × value_i)  /  Σ w_i,    w_i = 1 / (d_i² + 1)
+//
+//   Then pixel_value (in days) maps to a color via the calibrated urgency
+//   thresholds. A CRITICAL cell's center always reads red because its
+//   raw_prediction is low — independent of zoom or local point density.
+//
+// Implementation notes:
+//   • L.GridLayer extension renders 256×256 tiles on demand and caches them.
+//   • Each tile filters points to those within its bounds + a buffer so
+//     the per-pixel inner loop only touches relevant cells.
+//   • Internal grid is rendered at 1/STRIDE resolution and upscaled with
+//     canvas bilinear smoothing — ~16× speedup and free Gaussian-ish blur.
+//   • Alpha falls off quadratically from each point's center to the cutoff
+//     so isolated cells render as soft circular blobs, not hard squares.
+// ===================================
+function createHeatmapLayer(features) {
+  if (!features || features.length === 0) return null;
+
+  // Calibrated thresholds with a sensible fallback if metadata is missing.
+  const thresholds = state.thresholds || { CRITICAL: 1, HIGH: 2.5, MEDIUM: 4.5, LOW: 7 };
+  const radius = Number(document.getElementById("heatRadius").value) || 50;
+
+  // Pre-extract numeric points so createTile() never re-parses GeoJSON.
+  const points = features.map(f => ({
+    lat: f.geometry.coordinates[1],
+    lon: f.geometry.coordinates[0],
+    value: f.properties.raw_prediction != null
+      ? Number(f.properties.raw_prediction)
+      : Number(f.properties.days_until_fire),
+  })).filter(p => isFinite(p.value));
+
+  if (points.length === 0) return null;
+
+  const STRIDE = 4;        // render at 1/STRIDE resolution then upscale
+  const MAX_ALPHA = 200;   // peak per-pixel alpha (out of 255)
+  const cutoff = radius;
+  const cutoffSq = cutoff * cutoff;
+
+  const InterpolationLayer = L.GridLayer.extend({
+    createTile: function (coords) {
+      const tile = document.createElement("canvas");
+      const size = this.getTileSize();
+      tile.width = size.x;
+      tile.height = size.y;
+      const ctx = tile.getContext("2d");
+
+      // Tile geographic bounds → pixel projection
+      const tileBounds = this._tileCoordsToBounds(coords);
+      const nw = tileBounds.getNorthWest();
+      const se = tileBounds.getSouthEast();
+      const lonSpan = se.lng - nw.lng;
+      const latSpan = nw.lat - se.lat;
+      if (lonSpan <= 0 || latSpan <= 0) return tile;
+
+      // Buffer (in degrees) corresponding to the cutoff in pixels — used to
+      // pick up points just outside the tile that still influence its edges.
+      const bufferLng = (radius / size.x) * lonSpan;
+      const bufferLat = (radius / size.y) * latSpan;
+
+      // Project nearby points into tile-local pixel coords
+      const localPoints = [];
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        if (p.lat < se.lat - bufferLat || p.lat > nw.lat + bufferLat) continue;
+        if (p.lon < nw.lng - bufferLng || p.lon > se.lng + bufferLng) continue;
+        const px = ((p.lon - nw.lng) / lonSpan) * size.x;
+        const py = ((nw.lat - p.lat) / latSpan) * size.y;
+        localPoints.push({ px, py, value: p.value });
+      }
+      if (localPoints.length === 0) return tile;
+
+      // Render at reduced resolution (W × H) then upscale to full tile.
+      const W = Math.ceil(size.x / STRIDE);
+      const H = Math.ceil(size.y / STRIDE);
+      const lowRes = ctx.createImageData(W, H);
+      const data = lowRes.data;
+
+      for (let py = 0; py < H; py++) {
+        for (let px = 0; px < W; px++) {
+          const x = (px + 0.5) * STRIDE;
+          const y = (py + 0.5) * STRIDE;
+
+          let weightSum = 0;
+          let weightedValue = 0;
+          let blobAlpha = 0;   // tracked separately for soft circular edges
+
+          for (let i = 0; i < localPoints.length; i++) {
+            const lp = localPoints[i];
+            const dx = lp.px - x;
+            const dy = lp.py - y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 > cutoffSq) continue;
+
+            // IDW weight for color averaging — heavy at center, drops as 1/d²
+            const wIdw = 1 / (d2 + 1);
+            weightSum += wIdw;
+            weightedValue += wIdw * lp.value;
+
+            // Quadratic falloff for blob alpha — goes to 0 exactly at cutoff
+            const f = 1 - Math.sqrt(d2) / cutoff;
+            const wAlpha = f * f;
+            if (wAlpha > blobAlpha) blobAlpha = wAlpha;
+          }
+
+          const idx = (py * W + px) * 4;
+          if (weightSum === 0) {
+            data[idx + 3] = 0;
+            continue;
+          }
+
+          const avgValue = weightedValue / weightSum;
+          const color = _valueToColor(avgValue, thresholds);
+          data[idx]     = color.r;
+          data[idx + 1] = color.g;
+          data[idx + 2] = color.b;
+          // Bias alpha slightly so blob centers read solid; cap at MAX_ALPHA
+          data[idx + 3] = Math.round(Math.min(1, blobAlpha * 1.4) * MAX_ALPHA);
+        }
+      }
+
+      // Upscale low-res → full tile using bilinear smoothing (free blur).
+      const tmp = document.createElement("canvas");
+      tmp.width = W;
+      tmp.height = H;
+      tmp.getContext("2d").putImageData(lowRes, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(tmp, 0, 0, size.x, size.y);
+
+      return tile;
+    },
+  });
+
+  return new InterpolationLayer({
+    opacity: 0.85,
+    keepBuffer: 2,   // pre-render a 2-tile margin to avoid edge gaps on pan
+  });
 }
 
 // ===================================
@@ -311,9 +600,15 @@ function updateTimeline(predicted, baseDate) {
 
 // ===================================
 // Layer mgmt
+//
+// Layer add order matters: heatmap is added FIRST so it renders below the
+// observed/predicted marker layers. That keeps the smooth gradient as the
+// background while the dot markers stay clickable on top for popups.
 // ===================================
+const LAYER_RENDER_ORDER = ["heatmap", "observed", "predicted"];
+
 function clearLayers() {
-  for (const k of Object.keys(state.layers)) {
+  for (const k of LAYER_RENDER_ORDER) {
     if (state.layers[k]) {
       map.removeLayer(state.layers[k]);
       state.layers[k] = null;
@@ -321,7 +616,7 @@ function clearLayers() {
   }
 }
 function addLayersToMap() {
-  for (const k of Object.keys(state.layers)) {
+  for (const k of LAYER_RENDER_ORDER) {
     if (state.layers[k]) map.addLayer(state.layers[k]);
   }
 }
@@ -342,8 +637,34 @@ function bindEvents() {
     btn.addEventListener("click", () => selectDay(btn.dataset.day));
   });
   document.getElementById("showObserved").addEventListener("change", displayData);
-  document.getElementById("showPredicted").addEventListener("change", displayData);
   document.getElementById("clusterMarkers").addEventListener("change", displayData);
+  document.getElementById("showCellPins").addEventListener("change", displayData);
+
+  // The Smoothing-radius slider lives inside the prediction toggle group:
+  // it only makes sense when the heatmap is rendered, so we hide it when
+  // predictions are off.
+  const predictedToggle = document.getElementById("showPredicted");
+  const radiusGroup = document.getElementById("heatRadiusGroup");
+  const radiusInput = document.getElementById("heatRadius");
+  const radiusValue = document.getElementById("heatRadiusValue");
+
+  const syncRadiusVisibility = () => {
+    radiusGroup.hidden = !predictedToggle.checked;
+  };
+  syncRadiusVisibility();
+
+  predictedToggle.addEventListener("change", () => {
+    syncRadiusVisibility();
+    displayData();
+  });
+
+  // Live label update on every drag tick; only rebuild the heatmap once the
+  // user releases the slider so a single drag doesn't re-render dozens of
+  // times (each render bakes ~1k canvas tiles).
+  radiusInput.addEventListener("input", () => {
+    radiusValue.textContent = `${radiusInput.value} px`;
+  });
+  radiusInput.addEventListener("change", displayData);
 }
 
 // ===================================
