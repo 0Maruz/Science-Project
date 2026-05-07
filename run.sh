@@ -47,6 +47,8 @@ Flags:
   --no-train             Skip training; just start the servers using whatever
                          is already in outputs/.
   --open                 Open the dashboard in the default browser when ready.
+  --quick                Shortcut: forward --quick to train.py (~3-5 min run,
+                         LightGBM only). Useful for iteration.
   --http-port N          Port for the static dashboard server (default 8080).
   --api-port  N          Port for FastAPI (default 8000).
   -h, --help             Show this message.
@@ -68,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --weather-arg)  WEATHER_ARGS+=("$2"); shift 2 ;;
     --no-train)     DO_TRAIN=0; shift ;;
     --open)         OPEN_BROWSER=1; shift ;;
+    --quick)        TRAIN_ARGS+=("--quick"); shift ;;
     --http-port)    HTTP_PORT="$2"; shift 2 ;;
     --api-port)     API_PORT="$2"; shift 2 ;;
     -h|--help)      usage; exit 0 ;;
