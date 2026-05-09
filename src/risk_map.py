@@ -51,8 +51,10 @@ os.makedirs(RISKMAP_DIR, exist_ok=True)
 HISTORY_WINDOW_DAYS = 30
 
 # Short-window filter: cells must have ≥ N fires in the last HISTORY_WINDOW_DAYS
-# days. Catches "recently active" cells. Default 1.
-MIN_HISTORICAL_FIRES_FOR_DISPLAY = int(os.getenv("MIN_HISTORICAL_FIRES_FOR_DISPLAY", "1"))
+# days. Catches "recently active" cells. Default 3 (was 1 — at 1 the dashboard
+# showed ~975 Thailand cells, vs GISTDA's ~74 hotspots/day; bumping to 3
+# brings the displayed scale closer to ground truth).
+MIN_HISTORICAL_FIRES_FOR_DISPLAY = int(os.getenv("MIN_HISTORICAL_FIRES_FOR_DISPLAY", "3"))
 
 # Long-window filter: cells must have ≥ N fires in the last
 # LONG_HISTORY_WINDOW_DAYS days. Catches "structurally fire-prone" cells.
@@ -72,7 +74,16 @@ MIN_LONG_HISTORICAL_FIRES = int(os.getenv("MIN_LONG_HISTORICAL_FIRES", "3"))
 # cell with 5+ fire-days/year is a known hotspot. Default cutoff of 1.0
 # fire-day/year is conservative — bump higher to be more selective.
 # Set to 0 to disable.
-MIN_FIRE_DAYS_PER_YEAR = float(os.getenv("MIN_FIRE_DAYS_PER_YEAR", "1.0"))
+MIN_FIRE_DAYS_PER_YEAR = float(os.getenv("MIN_FIRE_DAYS_PER_YEAR", "3.0"))
+
+# Per-day cap: regression model outputs concentrate predictions in 2-3 day
+# bucket (model bunching), so without a cap the dashboard would show ~500
+# cells "all firing on day 2" — wildly above GISTDA's observed ~74/day.
+# We rank cells within each predicted day by historical_fire_count_30d
+# (cells already actively burning are most likely to keep burning) and keep
+# only the top MAX_CELLS_PER_DAY. Default 100 ≈ GISTDA scale + headroom.
+# Set to 0 to disable.
+MAX_CELLS_PER_DAY = int(os.getenv("MAX_CELLS_PER_DAY", "100"))
 
 # Urban-exclusion filter: drop predictions that fall inside (or near) major
 # Thai cities. FIRMS detects garbage burning, industrial heat, and other
@@ -352,6 +363,35 @@ def build_predicted(df: pd.DataFrame, model, base_date, meta: dict):
             f"Country       filter: dropped {n_dropped:,} cells outside Thailand "
             f"(neighbour countries); {len(base):,} / {before:,} kept "
             f"({len(base)*100/max(before,1):.1f}%)"
+        )
+
+    # Per-day cap: cells already grouped by days_until_fire (clipped int).
+    # Within each day we sort by recent activity — historical_fire_count_30d
+    # is the strongest "is this place burning right now" signal — and keep
+    # the top MAX_CELLS_PER_DAY. Cells without 30d history (e.g. brand-new
+    # active cells) get historical_fire_count_30d=0 and tie-break by
+    # raw_prediction (closer to integer = more confident).
+    if MAX_CELLS_PER_DAY > 0 and len(base) > 0:
+        before = len(base)
+        # Confidence proxy: how close raw_pred landed to the rounded integer.
+        # Used as tiebreaker when historical_fire_count_30d is equal.
+        rounding_proximity = 1.0 - np.abs(
+            base["raw_prediction"].to_numpy() - base["days_until_fire"].to_numpy()
+        )
+        base = base.assign(_rank_score=base["historical_fire_count_30d"].fillna(0) * 1000 + rounding_proximity)
+        base = (
+            base.sort_values(["days_until_fire", "_rank_score"], ascending=[True, False])
+                .groupby("days_until_fire", group_keys=False)
+                .head(MAX_CELLS_PER_DAY)
+                .drop(columns="_rank_score")
+                .reset_index(drop=True)
+        )
+        n_dropped = before - len(base)
+        per_day_counts = base.groupby("days_until_fire").size().to_dict()
+        print(
+            f"Per-day cap   : capped each predicted day to {MAX_CELLS_PER_DAY} most-active "
+            f"cells; dropped {n_dropped:,}; {len(base):,} / {before:,} kept "
+            f"(per-day: {per_day_counts})"
         )
 
     print(f"Total after history filters: {len(base):,} / {n_total:,} cells "
