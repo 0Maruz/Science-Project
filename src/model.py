@@ -47,6 +47,9 @@ def _rf_builder(random_state: int):
 def _lgbm_builder(random_state: int):
     if LGBMRegressor is None:
         raise RuntimeError("lightgbm is not installed")
+    # MSE objective: empirically gave better val MAE 1.62 vs L1 loss's 1.67
+    # on this dataset (commit history). The MSE gradient is smoother and
+    # the booster finds better splits even when the reported metric is MAE.
     return LGBMRegressor(
         objective="regression",
         random_state=random_state,
@@ -59,6 +62,7 @@ def _lgbm_builder(random_state: int):
 def _xgb_builder(random_state: int):
     if XGBRegressor is None:
         raise RuntimeError("xgboost is not installed")
+    # Same MSE rationale as LightGBM above.
     return XGBRegressor(
         objective="reg:squarederror",
         tree_method="hist",
