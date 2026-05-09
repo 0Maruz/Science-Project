@@ -28,7 +28,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOUNDARY_PATH = os.path.join(BASE_DIR, "data", "boundaries", "thailand.geojson")
 
 
-def _load_thailand_polygon():
+def _load_provinces():
+    """Return list of (name, geometry) per Thai province from the bundled
+    GeoJSON, plus the union of all provinces as the country boundary."""
     if not os.path.exists(BOUNDARY_PATH):
         raise FileNotFoundError(
             f"Thailand boundary GeoJSON not found at {BOUNDARY_PATH}. "
@@ -36,15 +38,23 @@ def _load_thailand_polygon():
         )
     with open(BOUNDARY_PATH, "r", encoding="utf-8") as f:
         gj = json.load(f)
-    geoms = [shape(f["geometry"]) for f in gj["features"]]
-    return unary_union(geoms)
+    provinces = []
+    geoms = []
+    for feat in gj["features"]:
+        name = feat["properties"].get("name", "Unknown")
+        geom = shape(feat["geometry"])
+        provinces.append((name, geom))
+        geoms.append(geom)
+    return provinces, unary_union(geoms)
 
 
-# Eagerly construct the merged boundary + a prepared geometry that makes
-# repeated `.contains()` calls O(log N) instead of O(N) per query.
-_THAILAND = _load_thailand_polygon()
+# Eagerly build per-province + country-level shapes. Prepared geometries
+# turn repeated `.contains()` checks into O(log N) instead of O(N).
+_PROVINCES, _THAILAND = _load_provinces()
+_PROVINCE_PREPARED = [(name, prep(geom), geom.bounds) for name, geom in _PROVINCES]
 _THAILAND_PREPARED = prep(_THAILAND)
 THAILAND_BOUNDS = _THAILAND.bounds  # (min_lon, min_lat, max_lon, max_lat)
+PROVINCE_NAMES = sorted({name for name, _ in _PROVINCES})
 
 
 def is_in_thailand(lats: Iterable[float], lons: Iterable[float]) -> np.ndarray:
@@ -69,3 +79,31 @@ def is_in_thailand(lats: Iterable[float], lons: Iterable[float]) -> np.ndarray:
         if not _THAILAND_PREPARED.contains(Point(lons_arr[idx], lats_arr[idx])):
             inside[idx] = False
     return inside
+
+
+def find_province(lats: Iterable[float], lons: Iterable[float]) -> np.ndarray:
+    """Per-cell province lookup. Returns an object array of strings —
+    province name for points inside Thailand, empty string for points
+    outside any province polygon.
+
+    Two-stage filter for speed: a cheap per-province bbox check
+    eliminates the obvious misses, then prepared-geometry .contains()
+    confirms the survivors. The expensive call runs at most once per
+    cell because we break out of the province loop on the first match.
+    """
+    lats_arr = np.asarray(lats, dtype=float)
+    lons_arr = np.asarray(lons, dtype=float)
+    if lats_arr.shape != lons_arr.shape:
+        raise ValueError("lats and lons must have the same length")
+
+    out = np.array([""] * lats_arr.size, dtype=object)
+    for i in range(lats_arr.size):
+        lat, lon = lats_arr[i], lons_arr[i]
+        for name, prepared, bounds in _PROVINCE_PREPARED:
+            min_lon, min_lat, max_lon, max_lat = bounds
+            if lon < min_lon or lon > max_lon or lat < min_lat or lat > max_lat:
+                continue
+            if prepared.contains(Point(lon, lat)):
+                out[i] = name
+                break
+    return out

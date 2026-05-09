@@ -28,7 +28,7 @@ from features import (
 )
 from io_utils import read_table
 from urban_areas import THAI_URBAN_AREAS, classify_urban
-from thailand_boundary import is_in_thailand
+from thailand_boundary import is_in_thailand, find_province
 
 # =========================================================
 # CONFIG
@@ -376,6 +376,16 @@ def build_predicted(df: pd.DataFrame, model, base_date, meta: dict):
             f"({len(base)*100/max(before,1):.1f}%)"
         )
 
+    # Per-cell province annotation — emitted into the GeoJSON properties so
+    # the frontend can offer a provincial filter without doing point-in-
+    # polygon on the client. Only runs against post-filter cells (small set).
+    if len(base) > 0:
+        provinces = find_province(
+            base["lat_grid"].to_numpy(),
+            base["lon_grid"].to_numpy(),
+        )
+        base["province"] = provinces
+
     # Per-day cap: cells already grouped by days_until_fire (clipped int).
     # Within each day we sort by recent activity — historical_fire_count_30d
     # is the strongest "is this place burning right now" signal — and keep
@@ -503,6 +513,7 @@ def append_geojson(observed: pd.DataFrame, predicted: pd.DataFrame, base_date, t
                 "fire_days_per_year": float(r["fire_days_per_year"]),
                 "nearest_urban_area": str(r["nearest_urban_area"]),
                 "nearest_urban_distance_km": float(r["nearest_urban_distance_km"]),
+                "province": str(r.get("province", "") or ""),
                 "lat": float(r["lat_grid"]),
                 "lon": float(r["lon_grid"]),
             },

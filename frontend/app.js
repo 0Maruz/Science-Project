@@ -31,6 +31,9 @@ const state = {
   // user picks an older date from the dropdown, we filter to that snapshot.
   // Default is "latest" — resolved to the max base_date at render time.
   selectedBaseDate: "latest",
+  // Province filter: "all" = show every cell in the current snapshot;
+  // any province name = restrict to cells whose `province` property matches.
+  selectedProvince: "all",
   thresholds: null,   // { CRITICAL, HIGH, MEDIUM, LOW }
   metrics: null,      // held-out test metrics
   layers: { observed: null, predicted: null, heatmap: null },
@@ -139,6 +142,29 @@ function displayData() {
   renderFreshness(activeBaseDate);
   predicted = predicted.filter(f => f.properties.base_date === activeBaseDate);
 
+  // Province dropdown: discovered from this snapshot's cells. Empty-string
+  // values (from cells outside any polygon) are folded into "(unassigned)".
+  const provinceSet = new Set(
+    predicted.map(f => (f.properties.province || "").trim()).filter(Boolean)
+  );
+  populateProvinceFilter(Array.from(provinceSet).sort());
+
+  // Apply province filter (after dropdown is populated so user's selection
+  // can fall back to "all" if the previously-selected province isn't in
+  // this snapshot).
+  if (state.selectedProvince !== "all") {
+    if (provinceSet.has(state.selectedProvince)) {
+      predicted = predicted.filter(
+        f => f.properties.province === state.selectedProvince
+      );
+    } else {
+      // Snapshot doesn't contain the picked province — fall back to "all".
+      state.selectedProvince = "all";
+      const sel = document.getElementById("provinceFilter");
+      if (sel) sel.value = "all";
+    }
+  }
+
   // Apply day filter (real model output, no smoothing)
   const daySelected = state.selectedDay;
   const dayFiltered = daySelected === "all"
@@ -201,6 +227,31 @@ function populateBaseDatePicker(allDates, latestDate, activeDate) {
 
   // Reflect current state in the dropdown.
   sel.value = state.selectedBaseDate === "latest" ? "latest" : activeDate;
+}
+
+// Populate the province dropdown from the unique province names found in
+// the current snapshot's predicted cells. Always includes an "All
+// provinces (N)" option as the first entry.
+function populateProvinceFilter(provinceNames) {
+  const sel = document.getElementById("provinceFilter");
+  if (!sel) return;
+  const previous = state.selectedProvince;
+  sel.innerHTML = "";
+
+  const allOpt = document.createElement("option");
+  allOpt.value = "all";
+  allOpt.textContent = `All provinces (${provinceNames.length})`;
+  sel.appendChild(allOpt);
+
+  for (const name of provinceNames) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+
+  // Reflect current state if still valid; otherwise fall back to "all".
+  sel.value = provinceNames.includes(previous) ? previous : "all";
 }
 
 function dateAdd(isoDate, days) {
@@ -807,6 +858,17 @@ function bindEvents() {
       document.querySelectorAll(".day-btn").forEach(b => {
         b.classList.toggle("active", b.dataset.day === "all");
       });
+      displayData();
+    });
+  }
+
+  // Province filter: zoom the dashboard to one administrative area without
+  // panning the map. State change triggers a re-render that filters
+  // predicted features and rebuilds the layers.
+  const provinceFilter = document.getElementById("provinceFilter");
+  if (provinceFilter) {
+    provinceFilter.addEventListener("change", () => {
+      state.selectedProvince = provinceFilter.value;
       displayData();
     });
   }
