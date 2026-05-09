@@ -126,13 +126,21 @@ app.add_middleware(
 def _predict_days(model, df: pd.DataFrame, features: list[str]) -> tuple[np.ndarray, np.ndarray]:
     X = df[features].fillna(0)
     raw = model.predict(X)
-    clipped = np.clip(np.round(raw), 0, MAX_PREDICTION_DAYS).astype(int)
-    return raw, clipped
+    # Floor (not round) — keeps day-bucket semantics consistent with risk_map.py
+    # so the API and dashboard agree on which cells belong to "day 0", "day 1", etc.
+    # See risk_map.build_predicted for the rationale.
+    floored = np.clip(np.floor(raw), 0, MAX_PREDICTION_DAYS).astype(int)
+    return raw, floored
 
 
 def _rounding_confidence(raw: np.ndarray, clipped: np.ndarray) -> np.ndarray:
-    """Proxy: 1 - |raw - rounded|. NOT a calibrated probability."""
-    return 1.0 - np.abs(raw - clipped)
+    """Proxy: 1 - 2*|raw - bucket_centre|. NOT a calibrated probability.
+
+    Anchored at the bucket centre (floored + 0.5) so a raw value sitting
+    exactly in the middle of its day-bucket reads confidence = 1.0; values
+    near the bucket edge read closer to 0.
+    """
+    return (1.0 - 2.0 * np.abs(raw - (clipped + 0.5))).clip(0.0, 1.0)
 
 
 def _historical_counts(df: pd.DataFrame, base_date, window: int = HISTORY_WINDOW_DAYS) -> pd.DataFrame:

@@ -248,17 +248,28 @@ def build_predicted(df: pd.DataFrame, model, base_date, meta: dict):
     X = base[feature_cols].fillna(0)
 
     raw_pred = model.predict(X)
-    days_clipped = np.clip(np.round(raw_pred), 0, MAX_PREDICTION_DAYS).astype(int)
+    # Floor (not round) to assign each cell to a day bucket. round() pushed
+    # the model's narrow prediction band of [~1, ~5] days into days 1-5,
+    # leaving day 0 ("today") with 0 cells because the lowest raw_pred ~0.96
+    # rounds up to 1. Floor lets a 0.96 prediction land on day 0, which
+    # matches the operator's intuition that "≤1 day to fire" = today.
+    # Net effect: each bucket shifts forward by ~0.5 day on average and the
+    # day selector now exercises all of day 0..4 instead of just day 2..3.
+    days_floored = np.clip(np.floor(raw_pred), 0, MAX_PREDICTION_DAYS).astype(int)
 
     base["raw_prediction"] = raw_pred
-    base["days_until_fire"] = days_clipped
+    base["days_until_fire"] = days_floored
     base["predicted_fire_date"] = [
         (base_date + timedelta(days=int(d))).strftime("%Y-%m-%d")
-        for d in days_clipped
+        for d in days_floored
     ]
 
     # Rounding-proximity proxy. Documented as NOT a calibrated probability.
-    base["prediction_confidence"] = 1.0 - np.abs(raw_pred - days_clipped)
+    # Anchored at the bucket centre (days_floored + 0.5) so a raw_pred sitting
+    # exactly in the middle of a day reads as confidence = 1.0.
+    base["prediction_confidence"] = (
+        1.0 - 2.0 * np.abs(raw_pred - (days_floored + 0.5))
+    ).clip(0.0, 1.0)
 
     # Attach real historical fire counts per cell at TWO time scales:
     #   • 30-day count → "is this cell active right now?"
