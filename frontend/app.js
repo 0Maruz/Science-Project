@@ -529,7 +529,7 @@ function createObservedLayer(features) {
     const marker = L.circle([lat, lon], {
       radius: radiusM,
       renderer: renderer,
-      fillColor: "#ff5722", color: "#fff", weight: 1, fillOpacity: 0.8,
+      fillColor: "#9333ea", color: "#9333ea", weight: 1, fillOpacity: 0.8,
     });
     marker._baseRadiusM = baseM;
     marker._minPx = px.min;
@@ -537,7 +537,7 @@ function createObservedLayer(features) {
     marker._anchorLat = lat;
     marker.bindPopup(`
       <div class="popup">
-        <b style="color:#ff5722;">🔥 Observed Fire (FIRMS)</b><br>
+        <b style="color:#9333ea;">🔥 Observed Fire (FIRMS)</b><br>
         <small>Date: ${props.date}</small><br>
         <small>FIRMS detections: ${props.fire_count ?? "—"}</small><br>
         <small>Location: ${lat.toFixed(3)}°, ${lon.toFixed(3)}°</small>
@@ -571,7 +571,7 @@ function createPredictedLayer(features) {
     const marker = L.circle([lat, lon], {
       radius: radiusM,
       renderer: renderer,
-      fillColor: color, color: "#fff", weight: 1, fillOpacity: 0.85,
+      fillColor: color, color: color, weight: 1, fillOpacity: 0.85,
     });
     marker._baseRadiusM = baseM;
     marker._minPx = px.min;
