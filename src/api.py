@@ -21,6 +21,8 @@ import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from features import (
     DEFAULT_URGENCY_THRESHOLDS,
@@ -39,11 +41,32 @@ load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-MODEL_PATH   = os.path.join(BASE_DIR, "outputs", "models", "lgbm_fire_date_model.pkl")
-FEATURE_PATH = os.path.join(BASE_DIR, "outputs", "features", "full_features.parquet")
-META_PATH    = os.path.join(BASE_DIR, "outputs", "metadata", "dataset_info.json")
-RISKMAP_DIR  = os.path.join(BASE_DIR, "outputs", "riskmap")
+
+def _resolve(p: str) -> str:
+    """Resolve a possibly-relative path against BASE_DIR — same convention
+    used by train.py / risk_map.py so env-set paths work whether deploy
+    sets OUTPUT_DIR=./outputs (relative) or OUTPUT_DIR=/srv/outputs (abs)."""
+    return p if os.path.isabs(p) else os.path.join(BASE_DIR, p)
+
+
+# OUTPUT_DIR is the single knob: the cron service writes here, the API reads
+# from here, and Railway mounts a shared Volume at this absolute path.
+OUTPUT_DIR = _resolve(os.environ.get("OUTPUT_DIR", "./outputs"))
+
+MODEL_PATH   = os.path.join(OUTPUT_DIR, "models", "lgbm_fire_date_model.pkl")
+FEATURE_PATH = os.path.join(OUTPUT_DIR, "features", "full_features.parquet")
+META_PATH    = os.path.join(OUTPUT_DIR, "metadata", "dataset_info.json")
+RISKMAP_DIR  = os.path.join(OUTPUT_DIR, "riskmap")
 GEOJSON_PATH = os.path.join(RISKMAP_DIR, "fire_dates_all.geojson")
+
+# Static SPA dir — built by `npm run build` in /web. In production the
+# multi-stage Dockerfile copies the built artifact here so FastAPI can serve
+# both the API and the dashboard from the same origin. Override with
+# WEB_DIST_DIR if hosting the SPA elsewhere.
+WEB_DIST_DIR = os.environ.get(
+    "WEB_DIST_DIR",
+    os.path.join(BASE_DIR, "web", "dist"),
+)
 
 HISTORY_WINDOW_DAYS = 30
 
@@ -185,8 +208,10 @@ def _historical_counts(df: pd.DataFrame, base_date, window: int = HISTORY_WINDOW
 # ROUTES
 # =====================================
 
-@app.get("/")
-def root():
+@app.get("/api/status")
+def api_status():
+    """Programmatic status / version info. The unauthenticated GET / endpoint
+    serves the SPA dashboard in production, so this moved to /api/status."""
     return {
         "status": "Fire Date Prediction API running",
         "version": "2.1",
@@ -458,3 +483,37 @@ def predict_location(
             "confidence is a rounding-proximity proxy, not a calibrated probability."
         ),
     }
+
+
+# =====================================
+# STATIC SPA SERVING
+# =====================================
+#
+# The Vite-built React dashboard is served from the same FastAPI app. All
+# JSON API routes are registered above; the catch-all SPA fallback below is
+# registered LAST so specific API routes win route matching. Unknown paths
+# fall back to index.html so future client-side routing (or a deep-link
+# refresh) keeps working.
+
+if os.path.isdir(WEB_DIST_DIR):
+    _ASSETS_DIR = os.path.join(WEB_DIST_DIR, "assets")
+    if os.path.isdir(_ASSETS_DIR):
+        # Vite's hashed JS/CSS bundles live in /assets — mount them as a
+        # real static directory so cache headers + 404s behave correctly.
+        app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def _spa_fallback(full_path: str):
+        candidate = os.path.normpath(os.path.join(WEB_DIST_DIR, full_path))
+        # Block path traversal: candidate must stay inside WEB_DIST_DIR.
+        if not candidate.startswith(os.path.abspath(WEB_DIST_DIR)):
+            raise HTTPException(status_code=404)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        index = os.path.join(WEB_DIST_DIR, "index.html")
+        if not os.path.exists(index):
+            raise HTTPException(status_code=404, detail="SPA not built")
+        return FileResponse(index)
+else:
+    print(f"⚠️  WEB_DIST_DIR not found at {WEB_DIST_DIR} — SPA will not be served. "
+          "Run `npm run build` in /web or set WEB_DIST_DIR.")

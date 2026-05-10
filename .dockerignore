@@ -1,0 +1,39 @@
+# =====================================
+# Build context exclusions
+# =====================================
+# Goal: keep the build context small (faster uploads to the daemon /
+# Railway builders) and keep host artifacts out of the image. Anything
+# the build genuinely needs (web/, src/, requirements.txt) is implicitly
+# included by NOT being listed here.
+
+.git
+.gitignore
+.github
+.idea
+.vscode
+.venv
+__pycache__
+*.pyc
+.DS_Store
+*.log
+
+# Node
+web/node_modules
+web/dist
+
+# The image is provisioned with empty volumes; data/ + outputs/ are
+# mounted at runtime on Railway. Bundling local copies just bloats the
+# image and risks stale models shipping to prod.
+data
+outputs
+src.zip
+
+# Local-only / secrets
+.env
+.env.local
+.env.*.local
+
+# Misc
+*.md
+!README.md
+notebooks
