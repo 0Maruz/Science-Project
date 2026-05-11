@@ -95,44 +95,101 @@ def _resolve_thresholds(meta: dict) -> dict:
     return dict(DEFAULT_URGENCY_THRESHOLDS)
 
 
-# How many days of history to keep resident in RAM. The API's deepest reach
-# back is `_historical_counts` over the last 30 days; a 60-day buffer leaves
-# headroom without paying the multi-GB cost of holding the full 4M-row
-# training frame in memory.
-API_FEATURE_WINDOW_DAYS = int(os.environ.get("API_FEATURE_WINDOW_DAYS", "60"))
+HISTORY_WINDOW_DAYS = 30  # `_historical_counts` reaches back this far
 
 
-def _load_features_recent(feature_path: str) -> pd.DataFrame:
-    """Load just the recent slice of the features parquet.
+def _load_minimal_state(feature_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load only what the API actually serves: the latest-date snapshot + a
+    pre-aggregated 30-day historical fire-count table.
 
-    The training parquet (~4M rows × 80+ cols) blows up to multiple GB when
-    fully materialised as a pandas DataFrame, which OOMs container memory
-    on small Railway plans. We use pyarrow's row-group predicate pushdown
-    to read only rows in the last ``API_FEATURE_WINDOW_DAYS`` days — enough
-    for the latest snapshot + the 30-day historical-count window.
+    The training parquet is ~4M rows × 80+ cols and balloons to multiple GB
+    when materialised as a pandas DataFrame, which OOM-kills small Railway
+    containers during startup. The API never reads beyond:
 
-    Falls back to a full read for CSV inputs (no pushdown available there).
+      • the rows whose date == latest_date (used for model.predict per cell)
+      • a groupby sum of fire_count over the last 30 days (for the popup
+        "historical fires in last 30d" field)
+
+    So we load exactly those two slices and discard everything else. For
+    parquet inputs we stream via iter_batches so peak conversion memory
+    stays bounded; for CSV inputs we accept the full read (no streaming
+    facility available, and CSV training data isn't expected in prod).
     """
     if not feature_path.lower().endswith(".parquet"):
         df = read_table(feature_path)
         df["date"] = pd.to_datetime(df["date"]).dt.date
-        return df
+        latest = df["date"].max()
+        df_latest = df[df["date"] == latest].copy()
+        hist = _aggregate_history(df, latest)
+        return df_latest, hist
 
-    import pyarrow.parquet as pq
-    from datetime import date
+    import pyarrow.dataset as pads
 
-    # Find the latest date by reading just the date column (cheap — parquet
-    # is column-oriented). Casting to pyarrow.compute would be even cheaper
-    # but pandas → date keeps the code small and works for date32 / string.
-    date_only = pq.read_table(feature_path, columns=["date"]).column("date")
-    latest_ts = pd.to_datetime(date_only.to_pandas()).max()
-    latest: date = latest_ts.date() if hasattr(latest_ts, "date") else latest_ts
-    cutoff = latest - timedelta(days=API_FEATURE_WINDOW_DAYS)
+    # Step 1 — find the latest date by scanning just one column. Cheap.
+    dataset = pads.dataset(feature_path, format="parquet")
+    date_scanner = dataset.scanner(columns=["date"])
+    latest_ts = pd.to_datetime(date_scanner.to_table().column("date").to_pandas()).max()
+    latest = latest_ts.date() if hasattr(latest_ts, "date") else latest_ts
+    cutoff = latest - timedelta(days=HISTORY_WINDOW_DAYS)
 
-    table = pq.read_table(feature_path, filters=[("date", ">=", cutoff)])
-    df = table.to_pandas()
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    return df
+    # Step 2 — latest snapshot, all columns, filter pushdown via dataset.
+    # Streamed as RecordBatches so peak conversion memory is bounded by
+    # batch_size × col_count instead of the full row group.
+    latest_scanner = dataset.scanner(
+        filter=pads.field("date") == latest,
+        batch_size=50_000,
+    )
+    latest_chunks: list[pd.DataFrame] = []
+    for batch in latest_scanner.to_batches():
+        if batch.num_rows == 0:
+            continue
+        latest_chunks.append(batch.to_pandas(split_blocks=True, self_destruct=True))
+    df_latest = (
+        pd.concat(latest_chunks, ignore_index=True) if latest_chunks else pd.DataFrame()
+    )
+    if not df_latest.empty:
+        df_latest["date"] = pd.to_datetime(df_latest["date"]).dt.date
+
+    # Step 3 — 30-day history, only the 4 cols needed. Aggregate per-batch
+    # so we never hold the full 290k-row slice in RAM.
+    hist_scanner = dataset.scanner(
+        columns=["lat_grid", "lon_grid", "fire_count"],
+        filter=(pads.field("date") >= cutoff) & (pads.field("date") <= latest),
+        batch_size=100_000,
+    )
+    running: dict[tuple[float, float], int] = {}
+    for batch in hist_scanner.to_batches():
+        if batch.num_rows == 0:
+            continue
+        chunk = batch.to_pandas()
+        chunk_sum = (
+            chunk.groupby(["lat_grid", "lon_grid"], as_index=False)["fire_count"].sum()
+        )
+        for _, row in chunk_sum.iterrows():
+            key = (row["lat_grid"], row["lon_grid"])
+            running[key] = running.get(key, 0) + int(row["fire_count"])
+    if running:
+        hist = pd.DataFrame(
+            [(la, lo, c) for (la, lo), c in running.items()],
+            columns=["lat_grid", "lon_grid", "historical_fire_count_30d"],
+        )
+    else:
+        hist = pd.DataFrame(
+            columns=["lat_grid", "lon_grid", "historical_fire_count_30d"]
+        )
+
+    return df_latest, hist
+
+
+def _aggregate_history(df: pd.DataFrame, latest) -> pd.DataFrame:
+    """CSV-fallback equivalent of the streaming aggregation above."""
+    start = latest - timedelta(days=HISTORY_WINDOW_DAYS)
+    sub = df[(df["date"] >= start) & (df["date"] <= latest)]
+    return (
+        sub.groupby(["lat_grid", "lon_grid"], as_index=False)["fire_count"]
+        .sum()
+        .rename(columns={"fire_count": "historical_fire_count_30d"})
+    )
 
 
 # =====================================
@@ -149,12 +206,17 @@ async def lifespan(app: FastAPI):
 
     app.state.model = joblib.load(MODEL_PATH)
 
-    df = _load_features_recent(feature_path)
-    app.state.df = df
+    df_latest, historical_counts = _load_minimal_state(feature_path)
+    app.state.df = df_latest
+    # Pre-aggregated 30-day count per (lat_grid, lon_grid). Computed once at
+    # startup since base_date doesn't change between requests on a given
+    # snapshot — saves a groupby per request and avoids holding 290k history
+    # rows in RAM long-term.
+    app.state.historical_counts = historical_counts
 
     meta = _load_metadata()
     app.state.meta = meta
-    app.state.features = _resolve_features(meta, df)
+    app.state.features = _resolve_features(meta, df_latest)
     app.state.thresholds = _resolve_thresholds(meta)
 
     print("✅ Fire Date Prediction Model loaded")
@@ -353,8 +415,7 @@ def predictions_today(request: Request):
     today["confidence"]    = _rounding_confidence(raw, clipped)
     today["urgency_level"] = [urgency_from_thresholds(int(d), thresholds) for d in clipped]
 
-    counts = _historical_counts(df, latest_date)
-    today = today.merge(counts, on=["lat_grid", "lon_grid"], how="left")
+    today = today.merge(request.app.state.historical_counts, on=["lat_grid", "lon_grid"], how="left")
     today["historical_fire_count_30d"] = today["historical_fire_count_30d"].fillna(0).astype(int)
 
     urgency_summary = today["urgency_level"].value_counts().to_dict()
@@ -432,8 +493,7 @@ def predictions_for_day(day: int, request: Request):
 
     target_date = latest_date + timedelta(days=day)
     sel = today[today["days_until_fire"] == day].copy()
-    counts = _historical_counts(df, latest_date)
-    sel = sel.merge(counts, on=["lat_grid", "lon_grid"], how="left")
+    sel = sel.merge(request.app.state.historical_counts, on=["lat_grid", "lon_grid"], how="left")
     sel["historical_fire_count_30d"] = sel["historical_fire_count_30d"].fillna(0).astype(int)
 
     return {
@@ -504,7 +564,7 @@ def predict_location(
     days = int(clipped[0])
     fire_date = (latest_date + timedelta(days=days)).strftime("%Y-%m-%d") if days > 0 else None
 
-    counts = _historical_counts(df, latest_date)
+    counts = request.app.state.historical_counts
     hist_row = counts[
         (counts["lat_grid"] == lat_grid) & (counts["lon_grid"] == lon_grid)
     ]

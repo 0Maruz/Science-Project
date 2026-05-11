@@ -219,8 +219,18 @@ def main(
     log.info("==== STEP 2: feature engineering ====")
     feats = build_features(daily, horizon=MAX_PREDICTION_DAYS, grid_size=grid_size)
 
+    # Sort by date + smaller row groups so api.py's pyarrow predicate
+    # pushdown can skip most row groups at startup. Without this the
+    # FastAPI container OOMs trying to decode 4M rows × 80+ cols at once.
     feature_path = os.path.join(p["feature_dir"], "full_features.parquet")
-    write_table(feats, feature_path)
+    feats_sorted = feats.sort_values("date", kind="stable")
+    write_table(
+        feats_sorted,
+        feature_path,
+        row_group_size=200_000,
+        compression="zstd",
+        compression_level=10,
+    )
     log.info("Saved feature dataset → %s", feature_path)
 
     log.info("==== STEP 3: filter to labelled rows ====")
