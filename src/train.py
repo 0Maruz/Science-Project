@@ -151,7 +151,11 @@ def chronological_split(
 
 
 def main(
-    n_iter: int = 50,
+    # 80 iters × 5 splits = 400 candidate fits per model. With the broader
+    # regularisation grid added in model.py, more samples are needed to find
+    # the sweet spot. Each LGB fit is ~3-5 s on the current dataset, so the
+    # full run is ~25-35 min — acceptable for a daily cron.
+    n_iter: int = 80,
     n_splits: int = 5,
     val_fraction: float = 0.2,
     test_fraction: float = 0.2,
@@ -513,7 +517,7 @@ def main(
 
 def _cli() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train fire-date prediction model")
-    p.add_argument("--n-iter", type=int, default=50, help="RandomizedSearchCV iterations")
+    p.add_argument("--n-iter", type=int, default=80, help="RandomizedSearchCV iterations (default 80)")
     p.add_argument("--n-splits", type=int, default=5, help="TimeSeriesSplit folds")
     p.add_argument("--val-fraction", type=float, default=0.2)
     p.add_argument("--test-fraction", type=float, default=0.2)

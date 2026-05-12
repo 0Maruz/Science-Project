@@ -113,36 +113,53 @@ def candidates(random_state: int = 42) -> Dict[str, Candidate]:
         ),
     }
     if LGBMRegressor is not None:
+        # Hyperparameter grid tilted toward stronger regularisation. The last
+        # full run logged val R² = -0.32 alongside test R² = 0.28 — clear
+        # overfitting to the early-season training rows. Levers:
+        #   • lower learning_rate floor + more n_estimators → smaller steps,
+        #     better generalisation when paired with early-stopping behaviour.
+        #   • narrower trees: num_leaves cap dropped from 255 → 127, max_depth
+        #     dropped from 20 → 15. Less capacity ⇒ less memorisation.
+        #   • higher min_child_samples → each split must cover ≥30 rows,
+        #     blocks the model from fitting tiny noisy clusters.
+        #   • L1 / L2 ranges widened upward (50.0 ceiling) so the search has
+        #     more room to find the sweet spot.
         cands["lightgbm"] = Candidate(
             name="lightgbm",
             builder=_lgbm_builder,
             param_distributions={
-                "n_estimators": [300, 500, 700, 1000],
-                "learning_rate": [0.01, 0.02, 0.05, 0.08, 0.1, 0.15],
-                "num_leaves": [31, 63, 127, 255],
-                "max_depth": [-1, 6, 10, 15, 20],
-                "min_child_samples": [10, 20, 30, 50, 100],
+                "n_estimators": [500, 700, 1000, 1500],
+                "learning_rate": [0.01, 0.02, 0.03, 0.05, 0.08],
+                "num_leaves": [31, 63, 95, 127],
+                "max_depth": [-1, 6, 8, 10, 12, 15],
+                "min_child_samples": [30, 50, 80, 120, 200],
                 "subsample": [0.6, 0.7, 0.8, 0.9, 1.0],
                 "colsample_bytree": [0.6, 0.7, 0.8, 0.9, 1.0],
-                "reg_alpha": [0.0, 0.1, 0.5, 1.0, 5.0, 10.0],
-                "reg_lambda": [0.0, 0.1, 0.5, 1.0, 5.0, 10.0],
-                "min_split_gain": [0.0, 0.01, 0.05, 0.1],
+                "reg_alpha": [0.0, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0],
+                "reg_lambda": [0.5, 1.0, 5.0, 10.0, 25.0, 50.0],
+                "min_split_gain": [0.0, 0.01, 0.05, 0.1, 0.2],
             },
         )
     if XGBRegressor is not None:
+        # Same regularisation tilt as LightGBM:
+        #   • shallower max_depth ceiling (10 vs 12).
+        #   • min_child_weight floor up to 5 (was 1) → reject splits that hit
+        #     too few hessian samples (XGB's overfitting-prevention analogue
+        #     of min_child_samples).
+        #   • reg_alpha/lambda ceilings widened.
         cands["xgboost"] = Candidate(
             name="xgboost",
             builder=_xgb_builder,
             param_distributions={
-                "n_estimators": [300, 500, 700, 1000],
-                "max_depth": [4, 6, 8, 10, 12],
-                "learning_rate": [0.01, 0.02, 0.05, 0.08, 0.1, 0.15],
+                "n_estimators": [500, 700, 1000, 1500],
+                "max_depth": [4, 5, 6, 7, 8, 10],
+                "learning_rate": [0.01, 0.02, 0.03, 0.05, 0.08],
                 "subsample": [0.6, 0.7, 0.8, 0.9, 1.0],
                 "colsample_bytree": [0.6, 0.7, 0.8, 0.9, 1.0],
-                "min_child_weight": [1, 3, 5, 10, 20],
-                "reg_alpha": [0.0, 0.1, 0.5, 1.0, 5.0, 10.0],
-                "reg_lambda": [0.5, 1.0, 2.0, 5.0, 10.0],
-                "gamma": [0.0, 0.05, 0.1, 0.3, 1.0],
+                "min_child_weight": [5, 10, 20, 30, 50],
+                "reg_alpha": [0.0, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0],
+                "reg_lambda": [1.0, 5.0, 10.0, 25.0, 50.0],
+                "gamma": [0.0, 0.05, 0.1, 0.3, 1.0, 3.0],
             },
         )
     return cands
