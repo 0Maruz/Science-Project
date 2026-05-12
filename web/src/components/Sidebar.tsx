@@ -3,11 +3,13 @@ import type {
   DisplayOptions,
   FireFeature,
   GeoJsonMetadata,
+  LiveFireMeta,
   UrgencyLevel,
   UrgencyThresholds,
   ValidationMetrics,
 } from "../types";
 import { computeFreshness, dateAdd } from "../utils/dates";
+import AccuracyHero from "./AccuracyHero";
 
 interface SidebarProps {
   // Header / base date
@@ -37,6 +39,12 @@ interface SidebarProps {
   options: DisplayOptions;
   onOptionsChange: (o: Partial<DisplayOptions>) => void;
   onExportCsv: () => void;
+
+  // Live-fire status (GISTDA)
+  liveFireMeta: LiveFireMeta;
+
+  // Info modal
+  onShowInfoModal: () => void;
 }
 
 export default function Sidebar(p: SidebarProps) {
@@ -68,8 +76,6 @@ export default function Sidebar(p: SidebarProps) {
 
   const fmtRange = (v: number | undefined) =>
     v == null ? "≤ —" : `≤ ${Number(v).toFixed(1)} d`;
-  const fmtMetric = (v: number | undefined, digits = 3) =>
-    typeof v === "number" && isFinite(v) ? v.toFixed(digits) : "—";
 
   return (
     <div id="sidebar">
@@ -139,6 +145,9 @@ export default function Sidebar(p: SidebarProps) {
           </select>
         </div>
       </div>
+
+      {/* Hero Accuracy — most-trusted number near the top, with details modal */}
+      <AccuracyHero metrics={p.metrics} onShowDetails={p.onShowInfoModal} />
 
       {/* Day Selector */}
       <div className="section">
@@ -273,47 +282,16 @@ export default function Sidebar(p: SidebarProps) {
         </button>
       </div>
 
-      {/* Validation Metrics */}
-      <div className="section">
-        <h3>📊 Validation Metrics</h3>
-        <div className="metrics-grid">
-          <div className="metric">
-            <div className="metric-label">MAE</div>
-            <div className="metric-value">{fmtMetric(p.metrics?.mae_days)}</div>
-            <div className="metric-unit">days</div>
-          </div>
-          <div className="metric">
-            <div className="metric-label">RMSE</div>
-            <div className="metric-value">{fmtMetric(p.metrics?.rmse_days)}</div>
-            <div className="metric-unit">days</div>
-          </div>
-          <div className="metric">
-            <div className="metric-label">R²</div>
-            <div className="metric-value">{fmtMetric(p.metrics?.r2)}</div>
-            <div className="metric-unit"></div>
-          </div>
-          <div className="metric">
-            <div className="metric-label">±1 day</div>
-            <div className="metric-value">
-              {p.metrics?.accuracy_within_1day != null
-                ? `${(p.metrics.accuracy_within_1day * 100).toFixed(1)}%`
-                : "—"}
-            </div>
-            <div className="metric-unit">acc</div>
-          </div>
-        </div>
-        <div className="metrics-note">
-          {p.metrics && Object.keys(p.metrics).length
-            ? "From held-out test split (real time-based)."
-            : "No metrics in GeoJSON metadata — re-run train.py to populate."}
-        </div>
-      </div>
-
       {/* Hit-rate */}
       <HitRate metadata={p.metadata} activeBaseDate={p.activeBaseDate} />
 
-      {/* Display Options */}
-      <DisplaySection options={p.options} onChange={p.onOptionsChange} />
+      {/* Display Options — simplified: only Observed FIRMS + Live GISTDA toggles.
+          Predictions + cell pins are always on (matches frontend/index.html v=8). */}
+      <DisplaySection
+        options={p.options}
+        liveFireMeta={p.liveFireMeta}
+        onChange={p.onOptionsChange}
+      />
 
       <div className="info-footer">
         <small>
@@ -389,11 +367,30 @@ function HitRate({
 
 function DisplaySection({
   options,
+  liveFireMeta,
   onChange,
 }: {
   options: DisplayOptions;
+  liveFireMeta: LiveFireMeta;
   onChange: (o: Partial<DisplayOptions>) => void;
 }) {
+  // Status line below the live-fire toggle: mirrors the legacy
+  // #liveFireStatus div, with a class-driven colour for idle / loading /
+  // ok / error states.
+  let statusClass = "live-fire-status";
+  let statusText = "";
+  if (liveFireMeta.status === "loading") {
+    statusClass += " loading";
+    statusText = "⟳ Fetching live hotspots…";
+  } else if (liveFireMeta.status === "ok") {
+    statusClass += " ok";
+    const t = liveFireMeta.lastFetch ? liveFireMeta.lastFetch.toLocaleTimeString() : "—";
+    statusText = `${liveFireMeta.count} hotspot${liveFireMeta.count !== 1 ? "s" : ""} · refreshed ${t}`;
+  } else if (liveFireMeta.status === "error") {
+    statusClass += " error";
+    statusText = `Could not load: ${liveFireMeta.error ?? "network error"}`;
+  }
+
   return (
     <div className="section">
       <h3>🎨 Display Options</h3>
@@ -410,54 +407,15 @@ function DisplaySection({
       </div>
 
       <div className="option-group">
-        <label className="toggle-label">
+        <label className="toggle-label" style={{ borderColor: "rgba(6,182,212,0.25)" }}>
           <input
             type="checkbox"
-            checked={options.showPredicted}
-            onChange={(e) => onChange({ showPredicted: e.target.checked })}
+            checked={options.showLiveFires}
+            onChange={(e) => onChange({ showLiveFires: e.target.checked })}
           />
-          <span>Show Predictions (smooth heatmap)</span>
+          <span style={{ color: "#06b6d4" }}>Live Fires — GISTDA VIIRS (now)</span>
         </label>
-        <div className="slider-group" hidden={!options.showPredicted}>
-          <label className="slider-label">
-            Smoothing radius
-            <span className="slider-value">{options.heatRadius} px</span>
-          </label>
-          <input
-            type="range"
-            min={15}
-            max={120}
-            step={1}
-            value={options.heatRadius}
-            onChange={(e) => onChange({ heatRadius: Number(e.target.value) })}
-          />
-          <div className="slider-hint">
-            Each cell's centre is rendered in its urgency colour at all zoom
-            levels. Larger radius = neighbours blend further.
-          </div>
-        </div>
-      </div>
-
-      <div className="option-group">
-        <label className="toggle-label">
-          <input
-            type="checkbox"
-            checked={options.clusterMarkers}
-            onChange={(e) => onChange({ clusterMarkers: e.target.checked })}
-          />
-          <span>Cluster Observed Markers</span>
-        </label>
-      </div>
-
-      <div className="option-group">
-        <label className="toggle-label">
-          <input
-            type="checkbox"
-            checked={options.showCellPins}
-            onChange={(e) => onChange({ showCellPins: e.target.checked })}
-          />
-          <span>Show Clickable Cell Pins</span>
-        </label>
+        {statusText && <div className={statusClass}>{statusText}</div>}
       </div>
     </div>
   );

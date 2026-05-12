@@ -7,8 +7,8 @@
 # Default behaviour:
 #   1. Train on whatever real FIRMS data is already in data/raw + data/firms/
 #   2. Refresh outputs/riskmap/fire_dates_all.geojson (real model output)
-#   3. Serve the static dashboard on  http://localhost:8080/frontend/
-#   4. Serve the FastAPI on            http://localhost:8000/
+#   3. Serve the FastAPI (which also serves the built React SPA at /) on
+#                                      http://localhost:8000/
 #
 # Optional flags fetch the latest real hotspots and/or real ERA5 weather
 # before training. Skip training entirely with --no-train.
@@ -25,7 +25,6 @@ DO_TRAIN=1
 OPEN_BROWSER=0
 WEATHER_ARGS=()
 TRAIN_ARGS=()
-HTTP_PORT=8080
 API_PORT=8000
 
 usage() {
@@ -49,8 +48,7 @@ Flags:
   --open                 Open the dashboard in the default browser when ready.
   --quick                Shortcut: forward --quick to train.py (~3-5 min run,
                          LightGBM only). Useful for iteration.
-  --http-port N          Port for the static dashboard server (default 8080).
-  --api-port  N          Port for FastAPI (default 8000).
+  --api-port  N          Port for FastAPI (also serves the SPA, default 8000).
   -h, --help             Show this message.
 
 Anything after a literal "--" is forwarded verbatim to train.py, e.g.:
@@ -71,7 +69,6 @@ while [[ $# -gt 0 ]]; do
     --no-train)     DO_TRAIN=0; shift ;;
     --open)         OPEN_BROWSER=1; shift ;;
     --quick)        TRAIN_ARGS+=("--quick"); shift ;;
-    --http-port)    HTTP_PORT="$2"; shift 2 ;;
     --api-port)     API_PORT="$2"; shift 2 ;;
     -h|--help)      usage; exit 0 ;;
     --)             shift; TRAIN_ARGS+=("$@"); break ;;
@@ -169,36 +166,36 @@ if [[ ! -f "outputs/riskmap/fire_dates_all.geojson" ]]; then
   (cd src && python risk_map.py)
 fi
 
-# ── Stage 4: serve the dashboard + API ──────────────────────────────────
-DASHBOARD_URL="http://localhost:${HTTP_PORT}/frontend/"
+# ── Stage 4: serve the FastAPI (which serves the built React SPA at /) ─────
+# The legacy /frontend/ static-server step is gone; the React app lives in
+# /web and is built into /web/dist, which FastAPI mounts at root via
+# src/api.py's StaticFiles fallback. One process serves the dashboard +
+# the API on the same origin.
 API_URL="http://localhost:${API_PORT}/"
-
-# Background HTTP server for the static dashboard (so ../outputs/... resolves).
-echo "→ Static dashboard  →  ${DASHBOARD_URL}"
-python -m http.server "${HTTP_PORT}" >/dev/null 2>&1 &
-HTTP_PID=$!
 
 cleanup() {
   echo
-  echo "→ Shutting down servers …"
-  if [[ -n "${HTTP_PID:-}" ]] && kill -0 "${HTTP_PID}" 2>/dev/null; then
-    kill "${HTTP_PID}" 2>/dev/null || true
-  fi
+  echo "→ Shutting down API …"
 }
 trap cleanup EXIT INT TERM
 
+if [[ ! -d "web/dist" ]]; then
+  echo "→ Building React dashboard (web/) for the first time …"
+  (cd web && npm install --silent && npm run build)
+fi
+
 if [[ $OPEN_BROWSER -eq 1 ]]; then
   if command -v xdg-open >/dev/null 2>&1; then
-    (sleep 1 && xdg-open "${DASHBOARD_URL}") &
+    (sleep 1 && xdg-open "${API_URL}") &
   elif command -v open >/dev/null 2>&1; then
-    (sleep 1 && open "${DASHBOARD_URL}") &
+    (sleep 1 && open "${API_URL}") &
   fi
 fi
 
 cat <<EOF
 
 ✅ Ready.
-   Dashboard:  ${DASHBOARD_URL}
+   Dashboard:  ${API_URL}
    API:        ${API_URL}
    API docs:   ${API_URL}docs
 

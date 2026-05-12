@@ -67,8 +67,37 @@ export type DaySelection = "all" | "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7"
 
 export interface DisplayOptions {
   showObserved: boolean;
+  showLiveFires: boolean;
+  // Internal "always-on" flags, kept in the type so MapView's prop contract
+  // doesn't have to branch. The Sidebar no longer exposes user toggles for
+  // these — predictions + cell pins are part of the core dashboard now.
   showPredicted: boolean;
-  clusterMarkers: boolean;
   showCellPins: boolean;
   heatRadius: number;
+}
+
+export type LiveFireStatus = "idle" | "loading" | "ok" | "error";
+
+export interface LiveFireMeta {
+  status: LiveFireStatus;
+  count: number;
+  lastFetch: Date | null;
+  error: string | null;
+}
+
+// GISTDA ArcGIS feature attributes — typed loosely because the upstream
+// schema can vary between the NPP and MODIS endpoints (some fields like
+// `satellite` only show up on one).
+export interface GistdaFeature {
+  attributes: {
+    latitude?: number | string;
+    longitude?: number | string;
+    confident?: string | number;
+    lu_name?: string;
+    pv_tn?: string;
+    ap_tn?: string;
+    date?: number;
+    time?: string;
+    satellite?: string;
+  };
 }

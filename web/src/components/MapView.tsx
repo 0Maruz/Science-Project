@@ -9,10 +9,12 @@ import {
 import type {
   DisplayOptions,
   FireFeature,
+  GistdaFeature,
   UrgencyLevel,
   UrgencyThresholds,
 } from "../types";
 import { createHeatmapLayer } from "../utils/heatmap";
+import { LIVE_FIRE_COLOR } from "../utils/gistda";
 import {
   AnchoredCircle,
   clampPxForFrac,
@@ -25,13 +27,15 @@ interface MapViewProps {
   observed: FireFeature[];
   predictedAll: FireFeature[]; // all predicted features for grid-size detection
   predictedVisible: FireFeature[]; // current day-filter applied
+  liveFires: GistdaFeature[];
   thresholds: UrgencyThresholds | null;
   options: DisplayOptions;
 }
 
-// Render order: heatmap below, then observed and predicted dots on top so
-// popups stay clickable.
-const LAYER_ORDER = ["heatmap", "observed", "predicted"] as const;
+// Render order: heatmap below, then observed / predicted / live-fire dots on
+// top so popups stay clickable. Live fires render last so they sit above
+// the historical-observation layer when both are on.
+const LAYER_ORDER = ["heatmap", "observed", "predicted", "livefire"] as const;
 type LayerKey = (typeof LAYER_ORDER)[number];
 
 export default function MapView(props: MapViewProps) {
@@ -41,6 +45,7 @@ export default function MapView(props: MapViewProps) {
     heatmap: null,
     observed: null,
     predicted: null,
+    livefire: null,
   });
 
   // One-time map init.
@@ -71,7 +76,7 @@ export default function MapView(props: MapViewProps) {
     clearLayers(layersRef.current, map);
 
     if (props.options.showObserved) {
-      layersRef.current.observed = buildObservedLayer(map, props.observed, props.options.clusterMarkers);
+      layersRef.current.observed = buildObservedLayer(map, props.observed);
     }
 
     if (props.options.showPredicted) {
@@ -85,15 +90,20 @@ export default function MapView(props: MapViewProps) {
       }
     }
 
+    if (props.options.showLiveFires && props.liveFires.length > 0) {
+      layersRef.current.livefire = buildLiveFireLayer(map, props.liveFires, gridM);
+    }
+
     addLayers(layersRef.current, map);
   }, [
     props.observed,
     props.predictedVisible,
+    props.liveFires,
     props.thresholds,
     props.options.showObserved,
     props.options.showPredicted,
     props.options.showCellPins,
-    props.options.clusterMarkers,
+    props.options.showLiveFires,
     props.options.heatRadius,
     gridM,
   ]);
@@ -117,7 +127,7 @@ function addLayers(layers: Record<LayerKey, L.Layer | null>, map: L.Map) {
 }
 
 function reclampAllMarkers(layers: Record<LayerKey, L.Layer | null>, map: L.Map) {
-  for (const k of ["observed", "predicted"] as const) {
+  for (const k of ["observed", "predicted", "livefire"] as const) {
     const layer = layers[k];
     if (!layer) continue;
     const eachLayer = (layer as unknown as { eachLayer?: (cb: (m: L.Layer) => void) => void })
@@ -133,10 +143,10 @@ function reclampAllMarkers(layers: Record<LayerKey, L.Layer | null>, map: L.Map)
   }
 }
 
-function buildObservedLayer(map: L.Map, features: FireFeature[], cluster: boolean): L.Layer {
-  const layer = cluster
-    ? (L as unknown as { markerClusterGroup: () => L.LayerGroup }).markerClusterGroup()
-    : L.layerGroup();
+function buildObservedLayer(map: L.Map, features: FireFeature[]): L.Layer {
+  // Cluster mode removed from the UI — observed markers are always individual
+  // dots now, matching the simplified frontend/index.html layout.
+  const layer = L.layerGroup();
 
   const renderer = L.canvas({ padding: 0.5 });
   const gridM = gridSizeMeters(features);
@@ -226,6 +236,61 @@ function buildPredictedLayer(map: L.Map, features: FireFeature[], gridM: number)
     }
     html += `<small>Cell: ${lat.toFixed(3)}°, ${lon.toFixed(3)}°</small></div>`;
     marker.bindPopup(html);
+    layer.addLayer(marker);
+  }
+  return layer;
+}
+
+// Live GISTDA VIIRS hotspots — distinct cyan dots so they don't visually
+// merge with the urgency-coloured prediction layer.
+function buildLiveFireLayer(map: L.Map, features: GistdaFeature[], gridM: number): L.Layer {
+  const layer = L.layerGroup();
+  const renderer = L.canvas({ padding: 0.5 });
+  const frac = 0.22;
+  const baseM = dotRadiusMeters(frac, gridM);
+  const px = clampPxForFrac(frac);
+
+  for (const feat of features) {
+    const a = feat.attributes ?? {};
+    const lat = Number(a.latitude);
+    const lon = Number(a.longitude);
+    if (!isFinite(lat) || !isFinite(lon)) continue;
+
+    const radiusM = clampedRadiusMeters(map, lat, baseM, px.min, px.max);
+    const marker = L.circle([lat, lon], {
+      radius: radiusM,
+      renderer,
+      fillColor: LIVE_FIRE_COLOR,
+      color: "#fff",
+      weight: 1,
+      fillOpacity: 0.88,
+    }) as AnchoredCircle;
+    marker._baseRadiusM = baseM;
+    marker._minPx = px.min;
+    marker._maxPx = px.max;
+    marker._anchorLat = lat;
+
+    const dateMs = a.date;
+    const dateStr = dateMs ? new Date(dateMs).toLocaleDateString() : "—";
+    const timeStr = (a.time ?? "").trim() || "—";
+    const conf = a.confident ?? "—";
+    const lu = a.lu_name ?? "—";
+    const prov = a.pv_tn ?? "—";
+    const dist = a.ap_tn ?? "—";
+    const sat = a.satellite ?? "VIIRS-NPP";
+
+    marker.bindPopup(
+      `<div class="popup">
+         <b style="color:${LIVE_FIRE_COLOR};">🛰 Live Hotspot · GISTDA ${sat}</b><br>
+         <div class="popup-block">
+           <b>${dateStr} ${timeStr}</b><br>
+           <small>${prov}${dist ? " · " + dist : ""}</small>
+         </div>
+         <small>Land use: ${lu}</small><br>
+         <small>Confidence: ${conf}</small><br>
+         <small>${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E</small>
+       </div>`
+    );
     layer.addLayer(marker);
   }
   return layer;

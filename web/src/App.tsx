@@ -1,21 +1,28 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchGeoJson } from "./api";
+import InfoModal from "./components/InfoModal";
 import MapView from "./components/MapView";
 import Sidebar from "./components/Sidebar";
 import type {
   DaySelection,
   DisplayOptions,
   FireGeoJson,
+  GistdaFeature,
+  LiveFireMeta,
 } from "./types";
 import { exportCellsCsv } from "./utils/csv";
 import { dateAdd } from "./utils/dates";
+import { fetchLiveFires, LIVE_REFRESH_MS } from "./utils/gistda";
 
 const DEFAULT_OPTIONS: DisplayOptions = {
   showObserved: false,
+  showLiveFires: false,
+  // showPredicted + showCellPins are always-on now (Sidebar doesn't surface
+  // toggles for them). Keep heatRadius hard-coded at 33 to match the new
+  // frontend default.
   showPredicted: true,
-  clusterMarkers: false,
-  showCellPins: false,
-  heatRadius: 50,
+  showCellPins: true,
+  heatRadius: 33,
 };
 
 export default function App() {
@@ -26,6 +33,72 @@ export default function App() {
   const [selectedProvince, setSelectedProvince] = useState<string>("all");
   const [selectedDay, setSelectedDay] = useState<DaySelection>("all");
   const [options, setOptions] = useState<DisplayOptions>(DEFAULT_OPTIONS);
+
+  // GISTDA live fires — fetched directly from the public ArcGIS endpoint
+  // when the toggle is on. Auto-refreshes every 30 min while active.
+  const [liveFires, setLiveFires] = useState<GistdaFeature[]>([]);
+  const [liveFireMeta, setLiveFireMeta] = useState<LiveFireMeta>({
+    status: "idle",
+    count: 0,
+    lastFetch: null,
+    error: null,
+  });
+  const liveFireTimerRef = useRef<number | null>(null);
+  const liveFireAbortRef = useRef<AbortController | null>(null);
+
+  // Info modal visibility
+  const [infoModalOpen, setInfoModalOpen] = useState(false);
+
+  const refreshLiveFires = useCallback(async () => {
+    // Abort any in-flight fetch so a quick toggle on/off doesn't pile up requests.
+    liveFireAbortRef.current?.abort();
+    const controller = new AbortController();
+    liveFireAbortRef.current = controller;
+    setLiveFireMeta((m) => ({ ...m, status: "loading", error: null }));
+    try {
+      const feats = await fetchLiveFires(controller.signal);
+      setLiveFires(feats);
+      setLiveFireMeta({
+        status: "ok",
+        count: feats.length,
+        lastFetch: new Date(),
+        error: null,
+      });
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      setLiveFires([]);
+      setLiveFireMeta((m) => ({ ...m, status: "error", count: 0, error: msg }));
+    }
+  }, []);
+
+  // Toggle drives fetch + auto-refresh timer lifecycle.
+  useEffect(() => {
+    if (!options.showLiveFires) {
+      if (liveFireTimerRef.current != null) {
+        window.clearTimeout(liveFireTimerRef.current);
+        liveFireTimerRef.current = null;
+      }
+      liveFireAbortRef.current?.abort();
+      setLiveFires([]);
+      setLiveFireMeta({ status: "idle", count: 0, lastFetch: null, error: null });
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      await refreshLiveFires();
+      if (cancelled || !options.showLiveFires) return;
+      liveFireTimerRef.current = window.setTimeout(tick, LIVE_REFRESH_MS);
+    };
+    tick();
+    return () => {
+      cancelled = true;
+      if (liveFireTimerRef.current != null) {
+        window.clearTimeout(liveFireTimerRef.current);
+        liveFireTimerRef.current = null;
+      }
+    };
+  }, [options.showLiveFires, refreshLiveFires]);
 
   // Load GeoJSON once on mount.
   useEffect(() => {
@@ -192,22 +265,39 @@ export default function App() {
         options={options}
         onOptionsChange={(o) => setOptions((prev) => ({ ...prev, ...o }))}
         onExportCsv={onExportCsv}
+        liveFireMeta={liveFireMeta}
+        onShowInfoModal={() => setInfoModalOpen(true)}
       />
 
       <MapView
         observed={derived.observed}
         predictedAll={derived.predictedAll}
         predictedVisible={derived.visiblePredicted}
+        liveFires={liveFires}
         thresholds={meta.urgency_thresholds ?? null}
         options={options}
       />
 
-      <Legend />
+      <Legend showLiveFire={liveFireMeta.status === "ok" && liveFireMeta.count > 0} />
+
+      <InfoModal
+        open={infoModalOpen}
+        onClose={() => setInfoModalOpen(false)}
+        activeBaseDate={derived.activeBaseDate}
+        predicted={derived.snapshotPredicted}
+        observed={derived.observed}
+        liveFires={liveFires}
+        metrics={meta.metrics ?? null}
+        thresholds={meta.urgency_thresholds ?? null}
+        metadata={meta}
+        selectedProvince={selectedProvince}
+        selectedDay={selectedDay}
+      />
     </>
   );
 }
 
-function Legend() {
+function Legend({ showLiveFire }: { showLiveFire: boolean }) {
   return (
     <div className="legend">
       <div className="legend-title">Fire Urgency</div>
@@ -230,8 +320,14 @@ function Legend() {
         </div>
         <div className="legend-item">
           <div className="legend-color observed" />
-          <span>Observed Fire</span>
+          <span>Observed (FIRMS)</span>
         </div>
+        {showLiveFire && (
+          <div className="legend-item">
+            <div className="legend-color live-fire" />
+            <span>Live VIIRS (GISTDA)</span>
+          </div>
+        )}
       </div>
     </div>
   );
