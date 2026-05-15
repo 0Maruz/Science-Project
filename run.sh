@@ -21,6 +21,7 @@ cd "$SCRIPT_DIR"
 
 FETCH_FIRMS=0
 FETCH_WEATHER=0
+FETCH_GISTDA=0
 DO_TRAIN=1
 PREDICT_ONLY=0
 OPEN_BROWSER=0
@@ -42,6 +43,9 @@ Flags:
   --weather              Run fetch_weather.py to pull real ERA5 daily
                          aggregates from Open-Meteo (no API key) before
                          training so weather features are included.
+  --gistda               Run fetch_gistda_hotspots.py (GISTDA ArcGIS REST,
+                         no key) → data/gistda/gistda_hotspots.parquet before
+                         training. Not yet merged into model features — cache only.
   --weather-arg <ARG>    Pass an extra arg to fetch_weather.py (repeatable).
                          e.g. --weather-arg --limit-cells --weather-arg 50
   --no-train             Skip training; just start the servers using whatever
@@ -51,8 +55,10 @@ Flags:
                          leave the existing model .pkl unchanged. Overrides --no-train
                          for the train step. Pair with --fresh / --weather for daily ops.
   --open                 Open the dashboard in the default browser when ready.
-  --quick                Shortcut: forward --quick to train.py (~3-5 min run,
+  --quick                Shortcut: forward --quick to train.py (~8–15 min run,
                          LightGBM only). Useful for iteration.
+  --fast                 Forward --fast to train.py: LightGBM only, 35×3 CV
+                         (faster than default two-booster 100×5, good overnight-lite).
   --api-port  N          Port for FastAPI (also serves the SPA, default 8000).
   -h, --help             Show this message.
 
@@ -62,6 +68,7 @@ Anything after a literal "--" is forwarded verbatim to train.py, e.g.:
 Real data sources:
   • NASA FIRMS VIIRS NRT  (always)
   • Open-Meteo ERA5        (only if --weather is used or cache exists)
+  • GISTDA hotspots        (optional --gistda; cache only until wired to training)
 EOF
 }
 
@@ -70,11 +77,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --fresh)        FETCH_FIRMS=1; shift ;;
     --weather)      FETCH_WEATHER=1; shift ;;
+    --gistda)       FETCH_GISTDA=1; shift ;;
     --weather-arg)  WEATHER_ARGS+=("$2"); shift 2 ;;
     --no-train)     DO_TRAIN=0; shift ;;
     --predict-only) PREDICT_ONLY=1; shift ;;
     --open)         OPEN_BROWSER=1; shift ;;
     --quick)        TRAIN_ARGS+=("--quick"); shift ;;
+    --fast)         TRAIN_ARGS+=("--fast"); shift ;;
     --api-port)     API_PORT="$2"; shift 2 ;;
     -h|--help)      usage; exit 0 ;;
     --)             shift; TRAIN_ARGS+=("$@"); break ;;
@@ -151,6 +160,13 @@ fi
 if [[ $FETCH_WEATHER -eq 1 ]]; then
   echo "→ Fetching real ERA5 daily weather (Open-Meteo Archive) …"
   (cd src && python fetch_weather.py "${WEATHER_ARGS[@]}")
+fi
+
+if [[ $FETCH_GISTDA -eq 1 ]]; then
+  echo "→ Fetching GISTDA hotspots (no API key) …"
+  if ! (cd src && python fetch_gistda_hotspots.py); then
+    echo "  ⚠️  GISTDA fetch failed — continuing (see docs/DATA_APIS_TH.md)."
+  fi
 fi
 
 # ── Stage 3: full train OR predict-only refresh (features + risk map) ───

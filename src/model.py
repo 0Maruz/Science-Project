@@ -178,28 +178,28 @@ def candidates(random_state: int = 42) -> Dict[str, Candidate]:
         #   • Lower learning rates (0.003–0.03) since L1 gradient is ±1 and
         #     converges more slowly than smooth MSE gradient.
         #   • More estimators (up to 2000) to compensate for slower convergence.
-        #   • Wider num_leaves range (15–127) — L1 objective creates coarser
-        #     splits so more leaves are needed to capture fine structure.
-        #   • min_child_samples reduced (20–200) — L1 splits fire differently
-        #     and can benefit from finer leaf partitions on dense cells.
-        #   • Added path_smooth (0–1) which helps L1 avoid oscillating splits.
+        #   • Wider num_leaves (15–255) — L1 splits are coarse; more leaves help
+        #     per-cell variation instead of collapsing toward a global mean.
+        #   • min_child_samples as low as 5 on dense grids when reg allows.
+        #   • reg_lambda includes 0.0 so search is not always strongly smoothed.
+        #   • path_smooth spans fine→heavy; max=1.0 alone often narrows preds.
         cands["lightgbm"] = Candidate(
             name="lightgbm",
             builder=_lgbm_builder,
             param_distributions={
                 "n_estimators": [500, 800, 1200, 1500, 2000],
                 "learning_rate": [0.003, 0.005, 0.01, 0.02, 0.03],
-                "num_leaves": [15, 31, 47, 63, 95, 127],
-                "max_depth": [-1, 5, 6, 8, 10, 12],
-                "min_child_samples": [10, 15, 20, 50, 80, 120, 200],
+                "num_leaves": [15, 31, 47, 63, 95, 127, 191, 255],
+                "max_depth": [-1, 5, 6, 8, 10, 12, 14],
+                "min_child_samples": [5, 10, 15, 20, 50, 80, 120, 200],
                 "subsample": [0.5, 0.6, 0.7, 0.8, 0.9],
                 "subsample_freq": [1, 5, 10],
                 "colsample_bytree": [0.5, 0.6, 0.7, 0.8, 0.9],
                 "reg_alpha": [0.0, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0],
-                "reg_lambda": [0.5, 1.0, 5.0, 10.0, 25.0, 50.0],
+                "reg_lambda": [0.0, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0],
                 "min_split_gain": [0.0, 0.01, 0.05, 0.1, 0.2],
                 "extra_trees": [True, False],
-                "path_smooth": [0.0, 0.1, 0.5, 1.0],
+                "path_smooth": [0.0, 0.05, 0.1, 0.2, 0.5, 1.0],
             },
         )
     if XGBRegressor is not None:
@@ -217,7 +217,7 @@ def candidates(random_state: int = 42) -> Dict[str, Candidate]:
             builder=_xgb_builder,
             param_distributions={
                 "n_estimators": [500, 800, 1200, 1500, 2000],
-                "max_depth": [3, 4, 5, 6, 7, 8, 9, 10],
+                "max_depth": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
                 "learning_rate": [0.003, 0.005, 0.01, 0.02, 0.03],
                 "subsample": [0.5, 0.6, 0.7, 0.8, 0.9],
                 "colsample_bytree": [0.5, 0.6, 0.7, 0.8, 0.9],

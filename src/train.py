@@ -187,6 +187,7 @@ def main(
     skip_risk_map: bool = False,
     random_state: int = 42,
     predict_only: bool = False,
+    max_history_days: int = 0,
 ) -> dict:
     load_dotenv()
     p = _paths()
@@ -229,11 +230,33 @@ def main(
         urban_buffer_km=urban_buffer_km,
     )
 
+    max_history_days_applied = 0
+    if max_history_days > 0:
+        dmax = pd.to_datetime(daily["date"]).max()
+        cutoff = dmax - pd.Timedelta(days=max_history_days)
+        before_rows = len(daily)
+        daily = daily[pd.to_datetime(daily["date"]) >= cutoff].copy()
+        max_history_days_applied = max_history_days
+        log.info(
+            "History window: last %d calendar days (%s → %s), rows %d → %d",
+            max_history_days,
+            cutoff.date(),
+            dmax.date(),
+            before_rows,
+            len(daily),
+        )
+        if daily.empty:
+            raise RuntimeError(
+                "max_history_days produced an empty daily frame — increase window or check data."
+            )
+
     # Stale-data check: warn if FIRMS hasn't been refreshed recently. The
     # model can still train on old data, but inference on stale state means
     # the dashboard's predictions are for a window that has already passed.
     latest_observed = pd.to_datetime(daily["date"]).max()
-    stale_days = (pd.Timestamp.utcnow().normalize().tz_localize(None) - latest_observed).days
+    latest_date = pd.Timestamp(latest_observed).normalize().date()
+    today_utc = pd.Timestamp.now("UTC").normalize().date()
+    stale_days = (today_utc - latest_date).days
     STALE_WARN_DAYS = int(os.getenv("STALE_WARN_DAYS", "5"))
     if stale_days > STALE_WARN_DAYS:
         log.warning(
@@ -328,6 +351,7 @@ def main(
             "earliest_date": str(feats_sorted["date"].min()),
             "model_path": model_path,
             "data_stale_days": int(stale_days),
+            "max_history_days_applied": int(max_history_days_applied),
         }
 
     log.info("==== STEP 3: filter to labelled rows ====")
@@ -510,6 +534,7 @@ def main(
         "data_stale_days": int(stale_days),
         "data_is_stale": bool(stale_days > STALE_WARN_DAYS),
         "total_days": int(pd.Series(feats["date"]).nunique()),
+        "max_history_days_applied": int(max_history_days_applied),
         "total_active_cells": int(feats[["lat_grid", "lon_grid"]].drop_duplicates().shape[0]),
         "training_rows": int(len(train_pool)),
         "grid_size": grid_size,
@@ -598,7 +623,13 @@ def _cli() -> argparse.Namespace:
     )
     p.add_argument(
         "--quick", action="store_true",
-        help="Fast iteration: --n-iter 10 --n-splits 3 --only lightgbm (~3-5 min)",
+        help="Fast iteration: --n-iter 12 --n-splits 3 --only lightgbm (~8–15 min)",
+    )
+    p.add_argument(
+        "--fast",
+        action="store_true",
+        help="Shorter train: fixes --n-iter 35 --n-splits 3 --only lightgbm (skip --fast "
+        "if you need custom --n-iter). Much faster than default 100×5×2 boosters.",
     )
     p.add_argument("--skip-risk-map", action="store_true")
     p.add_argument(
@@ -607,16 +638,33 @@ def _cli() -> argparse.Namespace:
         help="Reload FIRMS (+ caches), rebuild full_features.parquet, run risk_map "
         "only — no tuning, model .pkl unchanged. Requires a prior full train.",
     )
+    p.add_argument(
+        "--max-history-days",
+        type=int,
+        default=-1,
+        metavar="N",
+        help="If N≥0, keep only the last N calendar days of densified data (from latest "
+        "observation date). Faster training; does not guarantee better MAE/accuracy. "
+        "Default -1: use env MAX_TRAIN_HISTORY_DAYS if set, else 0 (full history).",
+    )
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _cli()
     if args.quick:
-        args.n_iter = 10
+        args.n_iter = 12
         args.n_splits = 3
         args.only = "lightgbm"
-        log.info("Quick mode: n_iter=10, n_splits=3, only=lightgbm")
+        log.info("Quick mode: n_iter=12, n_splits=3, only=lightgbm")
+    elif args.fast:
+        args.n_iter = 35
+        args.n_splits = 3
+        args.only = "lightgbm"
+        log.info("Fast train: n_iter=35, n_splits=3, only=lightgbm (LightGBM only, ~½–2× quicker than full two-booster search)")
+    max_hist = args.max_history_days
+    if max_hist < 0:
+        max_hist = int(os.getenv("MAX_TRAIN_HISTORY_DAYS", "0") or 0)
     only = tuple(s.strip() for s in args.only.split(",")) if args.only else None
     main(
         n_iter=args.n_iter,
@@ -628,4 +676,5 @@ if __name__ == "__main__":
         only=only,
         skip_risk_map=args.skip_risk_map,
         predict_only=args.predict_only,
+        max_history_days=max_hist,
     )

@@ -1,7 +1,10 @@
 # =====================================
 # FASTAPI BACKEND - FIRE DATE PREDICTION
 # =====================================
-#
+#['
+
+
+
 # All responses are derived from REAL data:
 #   • predictions: model output on real FIRMS-derived features
 #   • urgency_level: thresholds calibrated on real validation predictions

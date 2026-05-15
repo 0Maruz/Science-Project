@@ -45,7 +45,7 @@ cd src && python fetch_gistda_lulc.py
 
 # 2. Train the model (runs the full data → features → tune → save pipeline)
 cd src && python train.py [--n-iter 20] [--n-splits 5] [--only lightgbm,xgboost]
-#                          [--quick]            ← 10 iter × 3 splits, LGBM only (~3 min)
+#                          [--quick]            ← 12 iter × 3 splits, LGBM only (~8–15 min)
 #                          [--min-confidence 0] ← VIIRS conf floor (default 0; bumping
 #                                                  to 30 empirically hurt val MAE)
 # Default candidate set is `lightgbm,xgboost`; random_forest is excluded because
@@ -63,8 +63,10 @@ cd src && uvicorn api:app --reload
 # OR: end-to-end orchestrator at the project root (trains, then serves dashboard
 # on :8080 and FastAPI on :8000). Flags: --fresh (fetch FIRMS first), --weather,
 # --no-train, --open. Anything after `--` is forwarded to train.py.
-./run.sh [--fresh] [--weather] [--no-train] [-- --n-iter 30 --only lightgbm]
+./run.sh [--fresh] [--weather] [--gistda] [--quick|--fast] [--no-train] [--predict-only] [-- --n-iter 30 --only lightgbm]
 ```
+
+Data-source URLs / keys (Thai): `docs/DATA_APIS_TH.md`. Model glossary: `docs/MODEL_GLOSSARY_TH.md`.
 
 Dependencies: `pip install -r requirements.txt` into `.venv/`. Requires a `.env` file with `FIRMS_API_KEY` (see `.env.example` for the full set). All scripts use `load_dotenv()`.
 
@@ -199,7 +201,7 @@ Set `MAX_CELLS_PER_DAY=0` to disable the cap if a researcher needs raw model out
 
 The default candidate set is **`lightgbm,xgboost`** — RandomForest is excluded because (a) it consistently loses on val MAE and (b) it consumes ~95 % of total tuning wall-clock time. Pass `--only random_forest,lightgbm,xgboost` to restore the three-way contest.
 
-`--quick` is the iteration default: `--n-iter 10 --n-splits 3 --only lightgbm` (~3 minutes end-to-end). Use it when prototyping feature changes; switch back to the full search before deploying.
+`--quick` is the iteration default: `--n-iter 12 --n-splits 3 --only lightgbm` (~8–15 minutes end-to-end on a typical laptop). Use it when prototyping feature changes; switch back to the full search before deploying.
 
 If you change the candidate pool or feature list, **delete `outputs/models/*.pkl` before retraining** to avoid loading a stale artifact.
 
@@ -272,6 +274,7 @@ All entry points resolve paths via `BASE_DIR = os.path.dirname(os.path.dirname(o
 | `URBAN_BUFFER_KM` | `0` | Extra km beyond each city's hand-tuned radius. |
 | `COUNTRY_FILTER_ENABLED` | `true` | Drop predicted cells outside Thailand's land border at risk_map time. |
 | `STALE_WARN_DAYS` | `5` | Warn (and persist `data_is_stale=true`) when latest FIRMS observation is older than this. |
+| `MAX_TRAIN_HISTORY_DAYS` | `0` | If >0, `train.py` keeps only this many latest calendar days of densified data before features (faster; metric impact varies). CLI `--max-history-days` overrides when set ≥0. |
 | `MIN_WEATHER_COVERAGE` | `0.20` | Below this share of non-NaN weather rows, training auto-drops weather columns. |
 | `MIN_HISTORICAL_FIRES_FOR_DISPLAY` | `3` | risk_map.py filter: minimum fires in last 30d. |
 | `MIN_LONG_HISTORICAL_FIRES` | `3` | risk_map.py filter: minimum fires in last 90d. |
