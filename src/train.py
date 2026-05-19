@@ -1018,6 +1018,12 @@ def main(
         if not os.path.isfile(model_path):
             raise RuntimeError("predict-only requires an existing trained model")
         log.info("==== predict-only: skipped tuning ====")
+        # CRITICAL: free 5-6 GB of feature-engineering memory BEFORE calling
+        # risk_map.run(). Otherwise we stack risk_map's ~3.5 GB load on top
+        # of the still-resident feats/daily frames and OOM on a 22 GB laptop.
+        log.info("Releasing feature-engineering memory before risk_map…")
+        del feats, feats_sorted, daily
+        import gc; gc.collect()
         if not skip_risk_map:
             try:
                 from risk_map import run as generate_risk_map
@@ -1487,6 +1493,21 @@ def main(
 
     if not skip_risk_map:
         log.info("==== STEP 10: refresh risk map ====")
+        # Free everything we don't need before risk_map loads its own ~3.5 GB
+        # parquet. Without this, OOM on small machines is reliable.
+        try:
+            import gc
+            for _name in (
+                "X_train", "X_val", "X_test", "y_train_bin", "y_val_bin",
+                "y_test_bin", "train_df", "val_df", "test_df", "train_pool",
+                "train_df_us", "val_df_us", "full_X", "full_y_bin", "full_sw",
+                "sample_weight_train", "search", "estimator",
+            ):
+                if _name in locals():
+                    del locals()[_name]
+            gc.collect()
+        except Exception:
+            pass
         try:
             from risk_map import run as generate_risk_map
             generate_risk_map()

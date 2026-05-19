@@ -9,6 +9,7 @@ import type {
   ValidationMetrics,
 } from "../types";
 import { computeFreshness, dateAdd } from "../utils/dates";
+import { fmtTr, useLang } from "../utils/i18n";
 import AccuracyHero from "./AccuracyHero";
 import ActionToolbar from "./ActionToolbar";
 import DataSourcesPanel from "./DataSourcesPanel";
@@ -55,8 +56,23 @@ interface SidebarProps {
 }
 
 export default function Sidebar(p: SidebarProps) {
+  const { lang, t } = useLang();
   const fresh = computeFreshness(p.activeBaseDate);
   const isQuantileFallback = !!p.thresholds && Number(p.thresholds.CRITICAL) > 0;
+  const dateLocale = lang === "th" ? "th-TH" : "en-GB";
+  // Day-offset → human label. Uses the i18n dictionary for the first three
+  // offsets and "+N days" for the rest, with locale-appropriate date format.
+  const dayLabel = (d: number): string => {
+    if (d === 0) return t("sidebar.daypicker.today");
+    if (d === 1) return t("sidebar.daypicker.tomorrow");
+    if (d === 2) return t("sidebar.daypicker.dayafter");
+    return fmtTr(t("sidebar.daypicker.inNdays"), { n: d });
+  };
+  const fmtShortDate = (dateStr: string): string => {
+    try {
+      return new Date(dateStr).toLocaleDateString(dateLocale, { day: "numeric", month: "short" });
+    } catch { return dateStr; }
+  };
 
   // Day counts for timeline + day selector hide-empty logic.
   const dayCounts: Record<number, number> = {};
@@ -167,56 +183,73 @@ export default function Sidebar(p: SidebarProps) {
 
       {/* Day Selector */}
       <div className="section">
-        <h3>📆 Day Selector</h3>
+        <h3>📆 {t("sidebar.daypicker.label")}</h3>
         <div className="day-selector">
           <button
             className={`day-btn ${p.selectedDay === "all" ? "active" : ""}`}
             onClick={() => p.onDayChange("all")}
+            title={t("sidebar.daypicker.label")}
           >
-            All
+            {t("sidebar.daypicker.all")}
           </button>
           {([0, 1, 2, 3, 4, 5, 6, 7] as const).map((d) => {
             const count = dayCounts[d];
             const visible = count > 0;
-            const label = d === 0 ? "Today" : `+${d}`;
+            const dateStr = dateAdd(p.activeBaseDate, d);
+            const dateLabel = (() => {
+              if (d <= 2) return dayLabel(d);
+              return fmtShortDate(dateStr);
+            })();
+            const fullDate = fmtShortDate(dateStr);
             const key = String(d) as DaySelection;
+            const ptsSuffix = t("sidebar.daypicker.points_suffix");
             return (
               <button
                 key={d}
                 className={`day-btn ${p.selectedDay === key ? "active" : ""}`}
                 onClick={() => p.onDayChange(key)}
-                style={{ display: visible ? "" : "none" }}
+                style={{ display: visible ? "" : "none", flexDirection: "column", padding: "6px 4px", gap: 1 }}
+                title={`${fullDate} · ${count} ${ptsSuffix}`}
               >
-                {label}
+                <span style={{ fontSize: 11, fontWeight: 700 }}>{dateLabel}</span>
+                <span style={{ fontSize: 9, opacity: 0.7 }}>{count} {ptsSuffix}</span>
               </button>
             );
           })}
         </div>
-        <div className="day-selector-info">{p.daySelectorMessage}</div>
+        <div className="day-selector-info">
+          {p.daySelectorMessage}
+          <br/>
+          <span style={{ fontSize: 10, color: "var(--text-3)" }}>
+            {t("sidebar.range.label")}: {p.activeBaseDate} {t("sidebar.range.to")}: {dateAdd(p.activeBaseDate, 7)}
+          </span>
+        </div>
       </div>
 
       {/* Timeline */}
       <div className="section">
-        <h3>📅 7-Day Fire Timeline</h3>
+        <h3>📅 {t("sidebar.fires7d.title")}</h3>
         <div id="timeline">
           {(() => {
             const items: JSX.Element[] = [];
+            const ptsSuffix = t("sidebar.daypicker.points_suffix");
             for (let i = 0; i <= 7; i++) {
               const count = dayCounts[i];
               if (count === 0) continue;
               const dateStr = dateAdd(p.activeBaseDate, i);
-              const label =
-                i === 0 ? "Today" : i === 1 ? "Tomorrow" : `+${i} days`;
+              const label = dayLabel(i);
+              const shortDate = fmtShortDate(dateStr);
               items.push(
                 <div
                   key={i}
                   className="timeline-item has-fires"
                   onClick={() => p.onDayChange(String(i) as DaySelection)}
+                  title={`${dateStr} · ${count} ${ptsSuffix}`}
                 >
                   <div className="timeline-day">{label}</div>
-                  <div className="timeline-date">{dateStr}</div>
+                  <div className="timeline-date">{shortDate}</div>
                   <div className="timeline-count">
-                    {count} fire{count !== 1 ? "s" : ""}
+                    {count} {ptsSuffix}
                   </div>
                 </div>
               );
@@ -225,9 +258,8 @@ export default function Sidebar(p: SidebarProps) {
               items.push(
                 <div key="none" className="timeline-item">
                   <div className="timeline-day" style={{ opacity: 0.6 }}>
-                    No predictions
+                    {t("sidebar.fires7d.empty")}
                   </div>
-                  <div className="timeline-date">over the next 7 days</div>
                   <div className="timeline-count" style={{ opacity: 0.6 }}>—</div>
                 </div>
               );
@@ -369,7 +401,17 @@ function HitRate({
 
   let value = "—";
   let suffix = "no past predictions yet";
-  let detail = "For this snapshot · ±1 day window";
+  let detail = "For this snapshot · 15 km / ±1 day · HIGH+MEDIUM tiers";
+
+  // Read methodology config off the validation summary if risk_map persisted
+  // it; fall back to the defaults the backend now uses.
+  const vs = metadata?.validation_summary as unknown as {
+    match_radius_km?: number; match_day_window?: number;
+    operational_tiers?: string[];
+  } | undefined;
+  const radiusKm = vs?.match_radius_km ?? 15;
+  const dayWindow = vs?.match_day_window ?? 1;
+  const tiers = vs?.operational_tiers?.join("+") ?? "HIGH+MEDIUM";
 
   if (!bucket) {
     suffix = "no validation data";
@@ -389,7 +431,7 @@ function HitRate({
       value = `${pct.toFixed(0)}%`;
       suffix = `${hits} / ${validatable} hits`;
       detail =
-        `For ${activeBaseDate} · ±1 day window` +
+        `${activeBaseDate} · ${tiers} · ${radiusKm} km / ±${dayWindow} day` +
         (future > 0 ? ` · ${future} still pending` : "");
     }
   }
@@ -399,7 +441,7 @@ function HitRate({
       <h3>🎯 Hit Rate vs FIRMS</h3>
       <div
         className="hitrate-card"
-        title="Out of the predicted cells whose target date has passed, what fraction actually burned within ±1 day of when the model said. Live measurement of dashboard skill on real ground truth."
+        title={`Of the past predictions (${tiers} tiers only) whose target date has passed, what fraction had a real FIRMS detection within ${radiusKm} km and ±${dayWindow} day. LOW-tier predictions are excluded from the headline since they are background-rank cells, not operational alerts (see Compare page for the full-distribution audit).`}
       >
         <div className="hitrate-headline">
           <span id="hitrateValue">{value}</span>
@@ -408,9 +450,10 @@ function HitRate({
         <div className="hitrate-detail">{detail}</div>
       </div>
       <div className="metrics-note">
-        Each historical prediction is checked against the actual NASA FIRMS
-        detections within ±1 day of its predicted fire date. "Hit" = the cell
-        did burn near the predicted time.
+        Each historical HIGH/MEDIUM prediction is checked against FIRMS
+        detections within {radiusKm} km and ±{dayWindow} day of its predicted
+        fire date. "Hit" = a real fire was detected near the predicted location
+        and time. LOW-tier cells are tracked in the Compare page audit.
       </div>
     </div>
   );
@@ -427,26 +470,39 @@ function DisplaySection({
   liveFireMeta: LiveFireMeta;
   onChange: (o: Partial<DisplayOptions>) => void;
 }) {
-  // Status line below the live-fire toggle: mirrors the legacy
-  // #liveFireStatus div, with a class-driven colour for idle / loading /
-  // ok / error states.
+  const { t } = useLang();
   let statusClass = "live-fire-status";
   let statusText = "";
   if (liveFireMeta.status === "loading") {
     statusClass += " loading";
-    statusText = "⟳ Fetching live hotspots…";
+    statusText = t("sidebar.live.loading");
   } else if (liveFireMeta.status === "ok") {
     statusClass += " ok";
-    const t = liveFireMeta.lastFetch ? liveFireMeta.lastFetch.toLocaleTimeString() : "—";
-    statusText = `${liveFireMeta.count} hotspot${liveFireMeta.count !== 1 ? "s" : ""} · refreshed ${t}`;
+    const time = liveFireMeta.lastFetch ? liveFireMeta.lastFetch.toLocaleTimeString() : "—";
+    statusText = fmtTr(t("sidebar.live.ok"), {
+      n: liveFireMeta.count,
+      plural: liveFireMeta.count !== 1 ? "s" : "",
+      time,
+    });
   } else if (liveFireMeta.status === "error") {
     statusClass += " error";
-    statusText = `Could not load: ${liveFireMeta.error ?? "network error"}`;
+    statusText = fmtTr(t("sidebar.live.error"), { msg: liveFireMeta.error ?? "network error" });
   }
 
   return (
     <div className="section">
-      <h3>🎨 Display Options</h3>
+      <h3>{t("sidebar.display.title")}</h3>
+
+      <div className="option-group">
+        <label className="toggle-label" style={{ borderColor: "rgba(249,115,22,0.25)" }}>
+          <input
+            type="checkbox"
+            checked={options.showPredicted}
+            onChange={(e) => onChange({ showPredicted: e.target.checked })}
+          />
+          <span style={{ color: "#f97316" }}>{t("sidebar.display.predicted")}</span>
+        </label>
+      </div>
 
       <div className="option-group">
         <label className="toggle-label">
@@ -455,7 +511,7 @@ function DisplaySection({
             checked={options.showObserved}
             onChange={(e) => onChange({ showObserved: e.target.checked })}
           />
-          <span>Show Observed Fires (FIRMS)</span>
+          <span>{t("sidebar.display.observed")}</span>
         </label>
       </div>
 
@@ -466,7 +522,7 @@ function DisplaySection({
             checked={options.showLiveFires}
             onChange={(e) => onChange({ showLiveFires: e.target.checked })}
           />
-          <span style={{ color: "#06b6d4" }}>Live Fires — GISTDA VIIRS (now)</span>
+          <span style={{ color: "#06b6d4" }}>{t("sidebar.display.live")}</span>
         </label>
         {statusText && <div className={statusClass}>{statusText}</div>}
       </div>

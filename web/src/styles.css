@@ -1,7 +1,10 @@
 /* =========================================
    FIRE DATE PREDICTION DASHBOARD
    Minimal dark theme — quiet surfaces, single accent.
+   GISTDA FIRMS-inspired typography (IBM Plex Sans Thai)
    ========================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -14,24 +17,35 @@
   --text:         #e8e8ec;
   --text-2:       #a0a3aa;
   --text-3:       #6c707a;
-  --accent:       #f97316;   /* warm orange — single accent throughout */
-  --accent-soft:  rgba(249, 115, 22, 0.12);
+  --accent:       #ff6b35;   /* GISTDA-inspired fire orange */
+  --accent-soft:  rgba(255, 107, 53, 0.12);
+  --accent-fire:  #ff6b35;
 
   --critical: #ef4444;
-  --high:     #f97316;
+  --high:     #ff6b35;
   --medium:   #eab308;
   --low:      #22c55e;
-  --observed: #f97316;
+  --observed: #ff6b35;
   --live-fire: #06b6d4;   /* cyan — GISTDA NRT VIIRS */
+
+  --font-sans: 'IBM Plex Sans Thai', -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
 }
 
 html, body {
   height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-sans);
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code, pre, .mono, .stats-table .mono, .alert-table .mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ===== Sidebar ===== */
@@ -2684,4 +2698,458 @@ a:focus-visible {
 @keyframes incident-fresh-flash {
   0%, 100% { background: var(--surface); }
   30%      { background: rgba(239, 68, 68, 0.10); }
+}
+
+/* =========================================
+   Production v8 — Polished responsive sidebar + touch targets
+   ========================================= */
+
+/* === Show/hide based on device width === */
+.mobile-only  { display: none; }
+.desktop-only { display: inline-flex; }
+@media (max-width: 767px) {
+  .mobile-only  { display: inline-flex; }
+  .desktop-only { display: none; }
+}
+
+/* === Sidebar transition (desktop collapse + mobile slide) === */
+#sidebar {
+  transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.18s linear;
+  will-change: width, transform;
+}
+
+/* Desktop collapse: shrinks sidebar to 0 width, map expands to fill */
+@media (min-width: 768px) {
+  #sidebar-wrap.desktop-collapsed #sidebar {
+    width: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+  #sidebar-wrap.desktop-collapsed ~ #map {
+    left: 0 !important;
+    transition: left 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  #map {
+    transition: left 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+/* === Refined responsive breakpoints === */
+
+/* Tablet 640-1023px: narrower sidebar to give the map more room */
+@media (min-width: 640px) and (max-width: 1023px) {
+  #sidebar { width: 280px; }
+  #map { left: 280px; }
+}
+
+/* Phone 480-639px: small touches */
+@media (min-width: 480px) and (max-width: 639px) {
+  .top-bar-title { display: none; }    /* title hide; logo still visible */
+}
+
+/* Compact phone (< 480px): hide everything non-essential in top bar */
+@media (max-width: 479px) {
+  .top-bar { padding: 0 6px; gap: 4px; }
+  .top-bar-title { display: none; }
+  .top-bar-logo { font-size: 16px; }
+  .top-bar-status { gap: 2px; }
+  .theme-toggle { width: 28px; height: 28px; font-size: 13px; margin-right: 4px; }
+  .live-status { padding: 3px 7px; font-size: 10px; }
+  .live-label { display: none; }       /* dot only on very small */
+}
+
+/* === Touch targets — WCAG 2.5.5 recommends >= 44x44 for mobile === */
+@media (max-width: 767px) {
+  /* Top bar: bigger tap targets */
+  .hamburger-btn { width: 40px; height: 40px; font-size: 18px; }
+  .nav-tab { min-height: 40px; padding: 8px 12px; }
+  .nav-tab-icon { font-size: 18px; }
+  .theme-toggle { min-width: 36px; min-height: 36px; }
+  /* Action buttons */
+  .action-btn { min-height: 38px; padding: 8px 12px; }
+  .info-btn { width: 32px; height: 32px; }
+  /* Day selector buttons */
+  .day-btn { min-height: 40px; padding: 10px 0; }
+  /* Form inputs */
+  .date-picker, select, input[type="search"], input[type="text"], input[type="date"] {
+    min-height: 40px;
+  }
+}
+
+/* === Sidebar content: prevent flicker during collapse === */
+#sidebar > * {
+  transition: opacity 0.12s linear;
+}
+#sidebar-wrap.desktop-collapsed #sidebar > * {
+  opacity: 0;
+}
+
+/* === Smooth scrolling within sidebar === */
+#sidebar {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* === Reduce motion for accessibility === */
+@media (prefers-reduced-motion: reduce) {
+  #sidebar, #map, .alert-toast, .incident-card-fresh, .live-dot.live {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* === Print-friendly (operator wants to print incident report) === */
+@media print {
+  .top-bar, #sidebar, .alert-toasts, .bulk-action-bar, .send-drawer,
+  .drawer-backdrop, .sidebar-backdrop, .info-modal-backdrop {
+    display: none !important;
+  }
+  #map, .notify-page, .reports-page {
+    left: 0 !important;
+    margin: 0 !important;
+    top: 0 !important;
+    height: auto !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+}
+
+/* === Map empty state when sidebar collapsed on desktop === */
+@media (min-width: 768px) {
+  #sidebar-wrap.desktop-collapsed ~ #map {
+    width: 100% !important;
+  }
+}
+
+/* =========================================
+   Production v9 — Welcome banner (first-visit dismissable)
+   ========================================= */
+
+.welcome-banner {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2300;
+  width: min(720px, calc(100vw - 24px));
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 14px;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, rgba(249,115,22,0.18), rgba(249,115,22,0.04));
+  border: 1px solid rgba(249,115,22,0.45);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  animation: welcome-slide-in 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes welcome-slide-in {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+.welcome-banner-icon {
+  font-size: 26px;
+  line-height: 1;
+  align-self: center;
+}
+.welcome-banner-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.welcome-banner-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.welcome-banner-text {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.55;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.welcome-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.welcome-banner-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  align-self: flex-start;
+  font-family: inherit;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.welcome-banner-close:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 767px) {
+  .welcome-banner { padding: 12px 14px; gap: 10px; }
+  .welcome-banner-icon { font-size: 20px; }
+  .welcome-banner-title { font-size: 13px; }
+  .welcome-banner-text { font-size: 11px; }
+}
+
+/* =========================================
+   Metrics expander (AccuracyHero)
+   ========================================= */
+
+.metrics-expander {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+.metrics-expander[open] { border-color: rgba(255, 107, 53, 0.35); }
+.metrics-expander > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  user-select: none;
+  position: relative;
+}
+.metrics-expander > summary::-webkit-details-marker { display: none; }
+.metrics-expander > summary::after {
+  content: "▾";
+  color: var(--text-3);
+  font-size: 12px;
+  transition: transform 0.2s ease;
+  margin-left: auto;
+}
+.metrics-expander[open] > summary::after { transform: rotate(180deg); }
+.metrics-expander > summary:hover { background: rgba(255, 107, 53, 0.04); }
+.metrics-expander-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.metrics-expander > *:not(summary) {
+  padding: 0 14px 14px;
+}
+.metrics-expander[open] > div.metrics-grid {
+  padding: 0 14px 4px;
+}
+
+/* =========================================
+   Friendly summary table (ReportsPage)
+   ========================================= */
+
+.stats-table.summary-friendly {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.stats-table.summary-friendly th,
+.stats-table.summary-friendly td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 13px;
+  vertical-align: middle;
+}
+.stats-table.summary-friendly thead th {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+.stats-table.summary-friendly tbody tr {
+  transition: background 0.12s ease;
+}
+.stats-table.summary-friendly tbody tr:hover {
+  background: rgba(255, 107, 53, 0.04);
+}
+.stats-table.summary-friendly tbody tr:last-child td {
+  border-bottom: none;
+}
+.stats-table.summary-friendly td:first-child {
+  font-weight: 500;
+  white-space: nowrap;
+}
+.stats-table.summary-friendly td.right { text-align: right; }
+.stats-table.summary-friendly td.mono { font-variant-numeric: tabular-nums; }
+.stats-table.summary-friendly td:last-child {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+@media (max-width: 767px) {
+  .stats-table.summary-friendly th,
+  .stats-table.summary-friendly td { padding: 10px 8px; font-size: 12px; }
+  .stats-table.summary-friendly td:last-child { font-size: 11px; }
+}
+
+/* =========================================
+   Model Training Summary (ReportsPage top section)
+   ========================================= */
+
+.model-training-summary {
+  background: linear-gradient(180deg, rgba(255, 107, 53, 0.04) 0%, transparent 100%);
+  border: 1px solid rgba(255, 107, 53, 0.20);
+  padding: 22px 22px 20px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.status-chip-ok {
+  background: rgba(34, 197, 94, 0.10);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #22c55e;
+}
+
+/* ── Top results cards ── */
+.results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.result-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.result-card-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.result-card-value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.1;
+  margin: 4px 0 2px;
+  font-variant-numeric: tabular-nums;
+}
+.result-card-ci {
+  font-size: 11px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
+.result-card-interpret {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+/* ── Dataset / Model / Training 3-up cards ── */
+.summary-cards-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+.summary-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.summary-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+}
+.summary-card-defs {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(100px, auto) 1fr;
+  gap: 6px 12px;
+  font-size: 12px;
+}
+.summary-card-defs dt {
+  color: var(--text-3);
+  font-size: 11px;
+  padding-top: 1px;
+}
+.summary-card-defs dd {
+  margin: 0;
+  color: var(--text);
+  word-break: break-word;
+}
+
+@media (max-width: 767px) {
+  .model-training-summary { padding: 16px 14px; }
+  .results-grid { grid-template-columns: repeat(2, 1fr); }
+  .result-card-value { font-size: 22px; }
+  .summary-card-defs { grid-template-columns: 1fr; gap: 2px 0; }
+  .summary-card-defs dt { padding-top: 6px; }
+}
+
+/* =========================================
+   Chart toolbar (Bar/Line toggle + PNG/CSV download)
+   ========================================= */
+
+.chart-toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.chart-shape-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.chart-shape-toggle button {
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+}
+.chart-shape-toggle button:last-child { border-right: none; }
+.chart-shape-toggle button:hover { background: var(--surface-2); color: var(--text); }
+.chart-shape-toggle button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }

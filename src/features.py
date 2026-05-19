@@ -574,6 +574,21 @@ def build_features(
     horizon: int = MAX_PREDICTION_DAYS,
     grid_size: float = 0.1,
 ) -> pd.DataFrame:
+    # ── Downcast input to float32 BEFORE feature engineering so every
+    # downstream `.shift().rolling()` produces float32 Series too. This
+    # halves PEAK memory during build (10-12 GB → 5-6 GB on a 4.4M-row
+    # frame) which is what was OOM-killing predict-only on a 22 GB laptop.
+    # lat_grid / lon_grid stay float64 for exact grid arithmetic.
+    import gc
+    daily = daily.copy()
+    keep_64 = {"lat_grid", "lon_grid", "date"}
+    for c in daily.columns:
+        if c in keep_64:
+            continue
+        if daily[c].dtype == "float64":
+            daily[c] = daily[c].astype("float32")
+    gc.collect()
+
     df = add_neighbor_features(daily, grid_size=grid_size)
     df = add_temporal_features(df)
     df = add_calendar_features(df)
@@ -583,8 +598,25 @@ def build_features(
     df = add_urban_distance(df)
     df = add_fire_recurrence_features(df)
     df = make_label_days_until_fire(df, horizon=horizon)
+
+    # ── Downcast float64 → float32 across all feature columns ──
+    # On a 4.4M × ~180-col frame this halves memory (≈3.5 GB → ≈1.8 GB)
+    # without affecting LightGBM accuracy (the histogram binner doesn't care
+    # about the extra precision). lat_grid / lon_grid stay float64 for
+    # exact grid arithmetic; the label is int.
+    import gc
+    keep_64 = {"lat_grid", "lon_grid"}
+    for c in df.columns:
+        if c in keep_64:
+            continue
+        if df[c].dtype == "float64":
+            df[c] = df[c].astype("float32")
+        elif df[c].dtype == "int64" and c != "days_until_fire":
+            df[c] = df[c].astype("int32")
+    gc.collect()
+
     log.info(
-        "Built features for %d rows, %d positive labels (fire within %d days)",
+        "Built features for %d rows, %d positive labels (fire within %d days) — float32",
         len(df),
         int((df["days_until_fire"] >= 0).sum()),
         horizon,
