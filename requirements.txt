@@ -10,6 +10,7 @@ xgboost
 folium
 python-dotenv
 requests
+httpx
 pyarrow
 shapely>=2.0
 rasterio>=1.4
