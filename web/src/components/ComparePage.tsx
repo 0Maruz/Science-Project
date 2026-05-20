@@ -62,7 +62,7 @@ export default function ComparePage({ allFeatures, observedFeatures }: Props) {
   // misses and FIRMS pixel jitter) and ±1 day. Matches the sidebar
   // headline hit-rate so the two views read consistently. Slider can
   // tighten to 5 km for a strict audit.
-  const [radiusKm, setRadiusKm] = useState<number>(25);
+  const [radiusKm, setRadiusKm] = useState<number>(30);
   const [dayWindow, setDayWindow] = useState<number>(1);
   // Audit tier filter — default is HIGH+MEDIUM only since LOW is the
   // model's "background" tier (bottom 60% by probability) and almost all
@@ -70,6 +70,15 @@ export default function ComparePage({ allFeatures, observedFeatures }: Props) {
   // showing audit numbers on those tiers reflects the system's real
   // operational performance. Toggle to "ALL" for the full distribution.
   const [tierFilter, setTierFilter] = useState<"HIGH_MED" | "HIGH" | "ALL">("HIGH_MED");
+  // Clip observed FIRMS to "predicted area" — when ON, observations that
+  // are >coverageKm km from any prediction this snapshot don't count as
+  // misses. This makes recall reflect coverage *inside the model's
+  // attention zone* (which is where it could even theoretically be a
+  // miss). Default ON so the headline recall isn't dragged down by fires
+  // in regions the model never tried to forecast (cross-border, novel
+  // burns, etc.).
+  const [clipToCoverage, setClipToCoverage] = useState<boolean>(true);
+  const coverageKm = 50; // observations >50 km from any prediction are out-of-scope
   const leftMapRef = useRef<HTMLDivElement | null>(null);
   const rightMapRef = useRef<HTMLDivElement | null>(null);
   const overlayMapRef = useRef<HTMLDivElement | null>(null);
@@ -176,9 +185,27 @@ export default function ComparePage({ allFeatures, observedFeatures }: Props) {
       rows.push({ feature: pred, status: hit ? "hit" : "alarm" });
     }
 
-    const missedObserved = observedInWindow.filter((o) => !matchedObs.has(o));
+    // Missed = observations no prediction claimed. Optionally clip to the
+    // predicted area: drop observations that are >coverageKm km from EVERY
+    // prediction this snapshot, since the model never even tried to forecast
+    // those regions (cross-border fires, novel-area burns, etc.). This keeps
+    // recall honest about coverage WITHIN the model's attention zone.
+    let missedObserved = observedInWindow.filter((o) => !matchedObs.has(o));
+    if (clipToCoverage && snapshot.length > 0) {
+      const predCoords = snapshot.map((p) => p.geometry.coordinates);
+      missedObserved = missedObserved.filter((o) => {
+        const [olon, olat] = o.geometry.coordinates;
+        // Keep this observation in "missed" only if at least one prediction
+        // is within coverageKm — otherwise it's out-of-scope, not a miss.
+        for (const [plon, plat] of predCoords) {
+          if (Math.abs(plat - olat) > coverageKm / 80) continue;
+          if (haversineKm(olat, olon, plat, plon) <= coverageKm) return true;
+        }
+        return false;
+      });
+    }
     return { rows, missedObserved };
-  }, [snapshot, observedInWindow, observedFeatures, resolvedDate, radiusKm, dayWindow]);
+  }, [snapshot, observedInWindow, observedFeatures, resolvedDate, radiusKm, dayWindow, clipToCoverage]);
 
   const stats: Stats = useMemo(() => {
     let hits = 0, falseAlarms = 0, future = 0;
@@ -382,6 +409,18 @@ export default function ComparePage({ allFeatures, observedFeatures }: Props) {
               <option value="HIGH">{t("compare.tier.high")}</option>
               <option value="ALL">{t("compare.tier.all")}</option>
             </select>
+          </label>
+          <label
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, flex: "0 0 auto", cursor: "pointer" }}
+            title={t("compare.clip.tooltip", `Drop FIRMS observations that are >${coverageKm} km from every prediction this snapshot (model never tried to cover those regions, so they shouldn't count as misses).`)}
+          >
+            <input
+              type="checkbox"
+              checked={clipToCoverage}
+              onChange={(e) => setClipToCoverage(e.target.checked)}
+              style={{ accentColor: "var(--accent)" }}
+            />
+            <span>{t("compare.clip.label", `Clip to predicted area (≤${coverageKm} km)`)}</span>
           </label>
         </div>
       </div>
